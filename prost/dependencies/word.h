@@ -84,4 +84,15 @@ void*: word_pointer, \
 default: word_pointer \
 )(val)
 
+const char *word_type_to_str(WordType t) {
+    switch (t) {
+        case WINT: return "WINT";
+        case WFLOAT: return "WFLOAT";
+        case WPOINTER: return "WPOINTER";
+        case WCHAR_: return "WCHAR_";
+        case WUINT64: return "WUINT64";
+        default: return "UNKNOWN";
+    }
+}
+
 #endif //XWORD_H

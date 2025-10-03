@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <getopt.h>
 #include "prost/prost.h"
+#include "prost/std.h"
 
 typedef enum {
     T_NUMBER,
@@ -186,10 +187,10 @@ static void parse_mem_block(Parser *p) {
 
         Token value = next_token(&inner_lex);
         if (value.type == T_NUMBER) {
-            Word w = WORD((void*)(intptr_t)atoi(value.value));
+            Word w = WORD(atoll(value.value));
             char *name_copy = strdup(name.value);
             xmap_set(&p->vm->memory, name_copy, w);
-        }
+        } // TODO: add more types
 
         if (name.value) free(name.value);
         if (colon.value) free(colon.value);
@@ -253,8 +254,22 @@ static Instruction** parse_instruction(Parser *p, size_t *inst_count) {
     if (tok.type == T_ID) {
         if (strcmp(tok.value, "push") == 0) {
             inst->type = Push;
-            Token arg = expect(p, T_NUMBER);
-            inst->arg = WORD((void*)(intptr_t)atoi(arg.value));
+            Token arg = advance(p);
+            if (arg.type == T_NUMBER) {
+                inst->arg = word_uint64((uint64_t)atoll(arg.value));
+            } else if (arg.type == T_STRING) {
+                inst->arg = word_string(strdup(arg.value));
+            } else if (arg.type == T_ID && strcmp(arg.value, "mem") == 0) {
+                expect(p, T_SYMBOL);
+                Token mem_name = expect(p, T_ID);
+                inst->type = DerefMemory;
+                inst->arg = WORD(strdup(mem_name.value));
+            } else {
+                fprintf(stderr, "Error: push expects a number or string or memory\n");
+                free(inst);
+                free(instructions);
+                return NULL;
+            }
         }
         else if (strcmp(tok.value, "drop") == 0) {
             inst->type = Drop;
@@ -433,6 +448,7 @@ void print_usage(const char *prog) {
     printf("Options:\n");
     printf("  -h, --help           Show this help message\n");
     printf("  -o, --output FILE    Output bytecode file (default: out.pco)\n");
+    printf("  -d, --library FILE   Load a library\n");
     printf("  -r, --dont-run       Don't run the bytecode after compilation\n");
     printf("  -c, --dont-compile   Don't compile, only run (for .pa files)\n");
     printf("  -v, --verbose        Enable verbose output\n");
@@ -450,12 +466,14 @@ void print_usage(const char *prog) {
     printf("  %s -o custom.pco program.pa         # Custom output file\n", prog);
 }
 
+
 int main(int argc, char **argv) {
     bool dont_run = false;
     bool dont_compile = false;
     bool verbose = false;
     char *output_file = "out.pco";
     char *input_file = NULL;
+    XVec load_library = xvec_create(2);
 
     static struct option long_options[] = {
         {"help",         no_argument,       0, 'h'},
@@ -463,6 +481,7 @@ int main(int argc, char **argv) {
         {"dont-run",     no_argument,       0, 'r'},
         {"dont-compile", no_argument,       0, 'c'},
         {"verbose",      no_argument,       0, 'v'},
+        {"library",      required_argument, 0, 'd'},
         {0, 0, 0, 0}
     };
 
@@ -486,6 +505,9 @@ int main(int argc, char **argv) {
             case 'v':
                 verbose = true;
                 break;
+            case 'd':
+                xvec_push(&load_library, WORD(strdup(optarg)));
+                break;
             default:
                 print_usage(argv[0]);
                 return 1;
@@ -505,11 +527,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Check file extension to determine if it's bytecode or assembly
     size_t len = strlen(input_file);
     bool is_bytecode = (len > 4 && strcmp(input_file + len - 4, ".pco") == 0);
 
-    // If it's a bytecode file, force dont_compile
     if (is_bytecode) {
         dont_compile = true;
         if (verbose) printf("Detected bytecode file (.pco), skipping compilation\n");
@@ -520,8 +540,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error: Failed to initialize VM\n");
         return 1;
     }
+    register_std(vm);
 
-    // Compilation phase
+    for (int i = 0; i < xvec_len(&load_library); i++) {
+        p_load_library(vm, (const char*)xvec_get(&load_library, i)->as_pointer);
+    }
+    xvec_free(&load_library);
+
     if (!dont_compile) {
         if (verbose) printf("Reading source file: %s\n", input_file);
 
@@ -535,12 +560,6 @@ int main(int argc, char **argv) {
 
         ProstStatus status = assemble(vm, source);
         free(source);
-
-        if (status != P_OK) {
-            fprintf(stderr, "Error: Assembly failed with status %d\n", status);
-            p_free(vm);
-            return 1;
-        }
 
         if (verbose) printf("Generating bytecode...\n");
 
@@ -561,7 +580,6 @@ int main(int argc, char **argv) {
         if (verbose) printf("Compilation successful (%zu bytes)\n", bytecode.len);
     }
 
-    // Execution phase
     if (!dont_run) {
         const char *bytecode_file = dont_compile ? input_file : output_file;
 
@@ -574,9 +592,9 @@ int main(int argc, char **argv) {
         }
 
         if (dont_compile) {
-            // Create fresh VM for bytecode-only execution
             p_free(vm);
             vm = p_init();
+            register_std(vm);
             if (!vm) {
                 fprintf(stderr, "Error: Failed to initialize VM\n");
                 free(bytecode);

@@ -135,7 +135,7 @@ mem {
 __entry {
     push 10
     *mem.name ; deref memory to get value on the stack 
-    call @builtin.print
+    call @print
 }
 
 ```

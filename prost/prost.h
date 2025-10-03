@@ -2,6 +2,15 @@
 #define PROST_H
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <dlfcn.h>
+#endif
+
 #include "dependencies/xvec.h"
 #include "dependencies/xmap.h"
 #include "dependencies/bb.h"
@@ -31,6 +40,7 @@ typedef enum {
     P_ERR_INVALID_INDEX,
     P_ERR_CALL_STACK_UNDERFLOW,
     P_ERR_INVALID_VM_STATE,
+    P_ERR_GENERAL_VM_ERROR,
 } ProstStatus;
 
 /**
@@ -72,28 +82,25 @@ ProstVM *p_init();
 void p_free(ProstVM *vm);
 
 ProstStatus p_load_library(ProstVM *vm, const char *path);
-ProstStatus p_register_library(ProstVM *vm);
 ProstStatus p_register_external(ProstVM *vm, const char *name, p_external_function fn);
 
 ByteBuf p_to_bytecode(ProstVM *vm);
 ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode);
 
-ProstStatus p_call(ProstVM *vm, const char *name);
-ProstStatus p_call_extern(ProstVM *vm, const char *name);
-ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction);
-ProstStatus p_run(ProstVM *vm);
+ProstStatus p_call(ProstVM *vm, const char *name);                          // call a function
+ProstStatus p_call_extern(ProstVM *vm, const char *name);                   // call a external function
+ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction);    // execute a instruction
+ProstStatus p_run(ProstVM *vm);                                             // runs __entry
 
-Word p_pop(ProstVM *vm);
-void p_push(ProstVM *vm, Word w);
-Word p_peek(ProstVM *vm);
+Word p_pop(ProstVM *vm);                                                    // Pops a value from the stack (sets vm->status)
+void p_push(ProstVM *vm, Word w);                                           // Pushes a value onto the stack
+Word p_peek(ProstVM *vm);                                                   // Peeks at the top value of the stack (sets vm->status)
+Word p_expect(ProstVM *vm, WordType t);                                     // Pops and type-checks the top value of the stack
 
 // Adapted from Sean Barrett's single-header library pattern
 // Define PROST_IMPLEMENTATION in one source file before including prost.h
 // to compile the implementation once, avoiding multiple definition errors.
 #ifdef PROST_IMPLEMENTATION
-
-#include <stdlib.h>
-#include <string.h>
 
 // SECTION INIT-DEINIT
 ProstVM *p_init() {
@@ -148,14 +155,53 @@ void p_free(ProstVM *vm) {
 
 // SECTION EXTERN
 ProstStatus p_load_library(ProstVM *vm, const char *path) {
-    // TODO: Implement dynamic library loading
-    vm->status = P_ERR_LIBRARY_NOT_FOUND;
-    return vm->status;
-}
+    if (!vm || !path) {
+        vm->status = P_ERR_INVALID_INDEX;
+        return vm->status;
+    }
 
-ProstStatus p_register_library(ProstVM *vm) {
-    // TODO: Implement library registration
-    vm->status = P_OK;
+#ifdef _WIN32
+    HMODULE handle = LoadLibraryA(path);
+    if (!handle) {
+        vm->status = P_ERR_LIBRARY_NOT_FOUND;
+        return vm->status;
+    }
+#else
+    void *handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+    if (!handle) {
+        vm->status = P_ERR_LIBRARY_NOT_FOUND;
+        return vm->status;
+    }
+#endif
+
+    typedef ProstStatus (*p_lib_init_fn)(ProstVM*);
+    p_lib_init_fn init_fn;
+
+#ifdef _WIN32
+    init_fn = (p_lib_init_fn)GetProcAddress(handle, "p_register_library");
+#else
+    init_fn = (p_lib_init_fn)dlsym(handle, "p_register_library");
+#endif
+
+    if (!init_fn) {
+#ifdef _WIN32
+        FreeLibrary(handle);
+#else
+        dlclose(handle);
+#endif
+        vm->status = P_ERR_LIBRARY_NOT_FOUND;
+        return vm->status;
+    }
+
+    ProstStatus status = init_fn(vm);
+
+#ifdef _WIN32
+    FreeLibrary(handle);
+#else
+    dlclose(handle);
+#endif
+
+    vm->status = status;
     return vm->status;
 }
 
@@ -501,6 +547,7 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
         case AssignMemory:
             xmap_set(&vm->memory, (const char *)instruction.arg.as_pointer, p_pop(vm));
             break;
+
         default:
             vm->status = P_ERR_INVALID_BYTECODE;
             return vm->status;
@@ -582,6 +629,17 @@ Word p_peek(ProstVM *vm) {
     }
     Word *top = xvec_get(&vm->stack, xvec_len(&vm->stack) - 1);
     return *top;
+}
+
+Word p_expect(ProstVM *vm, WordType t) {
+    Word w = p_pop(vm);
+    if (w.type != t) {
+        fprintf(stderr, "ERROR: Unexpected word type. Expected %s but got %s\n", word_type_to_str(t), word_type_to_str(w.type));
+        vm->status = P_ERR_GENERAL_VM_ERROR;
+        vm->running = false;
+        return WORD(NULL);
+    }
+    return w;
 }
 // END SECTION STACK MANIPULATION
 
