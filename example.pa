@@ -1,0 +1,10 @@
+mem {
+    counter: 10
+}
+
+__entry {
+    *mem.counter
+    halt
+}
+
+
