@@ -25,6 +25,8 @@ typedef enum {
     Return,
     DerefMemory,
     AssignMemory,
+    Jmp,
+    JmpIf,
 } InstructionType;
 
 typedef struct {
@@ -549,6 +551,15 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
             xmap_set(&vm->memory, (const char *)instruction.arg.as_pointer, p_pop(vm));
             break;
 
+        case Jmp: 
+            vm->current_ip = instruction.arg.as_int;
+            break;
+
+        case JmpIf:
+            if (p_expect(vm, WINT).as_int == 1) {
+                vm->current_ip = instruction.arg.as_int;
+            }
+            break;
         default:
             vm->status = P_ERR_INVALID_BYTECODE;
             return vm->status;
