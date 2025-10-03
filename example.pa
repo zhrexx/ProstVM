@@ -1,6 +1,11 @@
 
 __entry {
-    push "Hello, World!"
+    push 10
+    push 10
+    call @add
+    push 2
+    call @mul
+
     call @print
     ret
 }
