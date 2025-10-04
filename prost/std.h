@@ -80,6 +80,22 @@ void divi(ProstVM *vm) {
     p_push(vm, word_uint64(numerator / denominator));
 }
 
+void cmp(ProstVM *vm) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+
+    if (w1.type == WPOINTER && w2.type == WPOINTER) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer))); // pointer == string (most cases we dont use pointers in
+        return;
+    }
+    if (w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_int == w2.as_int));
+        return;
+    }
+
+    p_push(vm, WORD(0));
+}
+
 
 void register_std(ProstVM *vm) {
     p_register_external(vm, "print", print);

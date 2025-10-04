@@ -1,13 +1,8 @@
-
-__entry {
-    push 10
-    push 10
-    call @add
-    push 2
-    call @mul
-
-    call @print
-    ret
+mem {
+    counter: 1
 }
 
-
+__entry {
+    *mem.counter
+    call @print
+}

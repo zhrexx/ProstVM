@@ -14,7 +14,6 @@ typedef enum {
     T_STRING,
     T_BLOCK,
     T_SYMBOL,
-    T_LABEL,
     T_EOF,
 } TokenType;
 
@@ -29,18 +28,10 @@ typedef struct {
 } Lexer;
 
 typedef struct {
-    char *name;
-    size_t position;
-} Label;
-
-typedef struct {
     Token *tokens;
     size_t current;
     size_t count;
     ProstVM *vm;
-    Label *labels;
-    size_t label_count;
-    size_t label_capacity;
 } Parser;
 
 static char peek(Lexer *lex) {
@@ -85,14 +76,7 @@ Token next_token(Lexer *lex) {
     if (isalpha(c) || c == '_') {
         size_t start = lex->pos;
         while (isalnum(peek(lex)) || peek(lex) == '_') get(lex);
-        size_t end = lex->pos;
-        
-        if (peek(lex) == ':') {
-            get(lex);
-            return (Token){T_LABEL, substr(lex->src, start, end)};
-        }
-        
-        return (Token){T_ID, substr(lex->src, start, end)};
+        return (Token){T_ID, substr(lex->src, start, lex->pos)};
     }
 
     if (c == '"') {
@@ -135,7 +119,6 @@ const char* token_to_str(TokenType t) {
         case T_STRING: return "STRING";
         case T_BLOCK: return "BLOCK";
         case T_SYMBOL: return "SYMBOL";
-        case T_LABEL: return "LABEL";
         case T_EOF: return "EOF";
         default: return "UNKNOWN";
     }
@@ -168,26 +151,6 @@ static Token expect(Parser *p, TokenType type) {
         exit(1);
     }
     return tok;
-}
-
-static void add_label(Parser *p, const char *name, size_t position) {
-    if (p->label_count >= p->label_capacity) {
-        p->label_capacity = p->label_capacity == 0 ? 8 : p->label_capacity * 2;
-        p->labels = realloc(p->labels, p->label_capacity * sizeof(Label));
-    }
-    p->labels[p->label_count].name = strdup(name);
-    p->labels[p->label_count].position = position;
-    p->label_count++;
-}
-
-static size_t find_label(Parser *p, const char *name) {
-    for (size_t i = 0; i < p->label_count; i++) {
-        if (strcmp(p->labels[i].name, name) == 0) {
-            return p->labels[i].position;
-        }
-    }
-    fprintf(stderr, "Error: Label '%s' not found\n", name);
-    exit(1);
 }
 
 static void parse_mem_block(Parser *p) {
@@ -227,7 +190,7 @@ static void parse_mem_block(Parser *p) {
             Word w = WORD(atoll(value.value));
             char *name_copy = strdup(name.value);
             xmap_set(&p->vm->memory, name_copy, w);
-        }
+        } // TODO: add more types
 
         if (name.value) free(name.value);
         if (colon.value) free(colon.value);
@@ -235,15 +198,9 @@ static void parse_mem_block(Parser *p) {
     }
 }
 
-static Instruction** parse_instruction(Parser *p, size_t *inst_count, size_t *current_pos) {
+static Instruction** parse_instruction(Parser *p, size_t *inst_count) {
     *inst_count = 0;
     Token tok = peek_parser(p);
-
-    if (tok.type == T_LABEL) {
-        Token label_tok = advance(p);
-        add_label(p, label_tok.value, *current_pos);
-        return NULL;
-    }
 
     if (tok.type == T_ID && strcmp(tok.value, "mem") == 0) {
         advance(p);
@@ -332,22 +289,6 @@ static Instruction** parse_instruction(Parser *p, size_t *inst_count, size_t *cu
                 inst->type = Call;
                 inst->arg = WORD(strdup(name.value));
             }
-        } else if (strcmp(tok.value, "jmp") == 0) {
-            Token target = advance(p);
-            inst->type = Jmp;
-            if (target.type == T_NUMBER) {
-                inst->arg = word_int((int64_t)atoll(target.value));
-            } else if (target.type == T_ID) {
-                inst->arg = word_string(strdup(target.value));
-            }
-        } else if (strcmp(tok.value, "jmpif") == 0) {
-            Token target = advance(p);
-            inst->type = JmpIf;
-            if (target.type == T_NUMBER) {
-                inst->arg = word_int((int64_t)atoll(target.value));
-            } else if (target.type == T_ID) {
-                inst->arg = word_string(strdup(target.value));
-            }
         }
         else {
             fprintf(stderr, "Unknown instruction: %s\n", tok.value);
@@ -386,9 +327,6 @@ static void parse_function(Parser *p) {
     Parser inner_parser;
     inner_parser.vm = p->vm;
     inner_parser.current = 0;
-    inner_parser.labels = NULL;
-    inner_parser.label_count = 0;
-    inner_parser.label_capacity = 0;
 
     Token *inner_tokens = NULL;
     size_t inner_count = 0;
@@ -412,36 +350,17 @@ static void parse_function(Parser *p) {
     inner_parser.tokens = inner_tokens;
     inner_parser.count = inner_count;
 
-    size_t current_pos = 0;
     while (inner_parser.current < inner_parser.count) {
         size_t inst_count = 0;
-        Instruction **instructions = parse_instruction(&inner_parser, &inst_count, &current_pos);
+        Instruction **instructions = parse_instruction(&inner_parser, &inst_count);
 
         if (instructions) {
             for (size_t i = 0; i < inst_count; i++) {
                 xvec_push(&fn->instructions, WORD(instructions[i]));
-                current_pos++;
             }
             free(instructions);
         }
     }
-
-    for (size_t i = 0; i < xvec_len(&fn->instructions); i++) {
-        Word *inst_word = xvec_get(&fn->instructions, i);
-        Instruction *inst = (Instruction *)inst_word->as_pointer;
-        
-        if ((inst->type == Jmp || inst->type == JmpIf) && inst->arg.type == WPOINTER) {
-            char *label_name = (char *)inst->arg.as_pointer;
-            size_t target = find_label(&inner_parser, label_name);
-            free(label_name);
-            inst->arg = word_int((int64_t)target);
-        }
-    }
-
-    for (size_t i = 0; i < inner_parser.label_count; i++) {
-        free(inner_parser.labels[i].name);
-    }
-    free(inner_parser.labels);
 
     for (size_t i = 0; i < inner_count; i++) {
         if (inner_tokens[i].value) free(inner_tokens[i].value);
@@ -489,9 +408,6 @@ ProstStatus assemble(ProstVM *vm, const char *src) {
     parser.count = count;
     parser.current = 0;
     parser.vm = vm;
-    parser.labels = NULL;
-    parser.label_count = 0;
-    parser.label_capacity = 0;
 
     parse(&parser);
 
@@ -549,6 +465,7 @@ void print_usage(const char *prog) {
     printf("  %s -c program.pa                    # Skip compilation, run directly\n", prog);
     printf("  %s -o custom.pco program.pa         # Custom output file\n", prog);
 }
+
 
 int main(int argc, char **argv) {
     bool dont_run = false;
