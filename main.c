@@ -9,428 +9,404 @@
 #include "prost/std.h"
 
 typedef enum {
-    T_NUMBER,
-    T_ID,
-    T_STRING,
-    T_BLOCK,
-    T_SYMBOL,
-    T_EOF,
-} P_TokenType;
+    TOK_NUM,
+    TOK_IDENT,
+    TOK_STR,
+    TOK_LBRACE,
+    TOK_RBRACE,
+    TOK_COLON,
+    TOK_DOT,
+    TOK_AT,
+    TOK_STAR,
+    TOK_EQ,
+    TOK_EOF,
+} TokenKind;
 
 typedef struct {
-    P_TokenType type;
-    char *value;
+    TokenKind kind;
+    char *lexeme;
+    int line;
+    int col;
 } Token;
 
 typedef struct {
-    const char *src;
+    const char *input;
     size_t pos;
-} Lexer;
+    size_t len;
+    int line;
+    int col;
+} Tokenizer;
 
 typedef struct {
     Token *tokens;
-    size_t current;
+    size_t pos;
     size_t count;
     ProstVM *vm;
-} Parser;
+} ParserState;
 
-static char peek(Lexer *lex) {
-    return lex->src[lex->pos];
+static void tok_init(Tokenizer *t, const char *src) {
+    t->input = src;
+    t->pos = 0;
+    t->len = strlen(src);
+    t->line = 1;
+    t->col = 1;
 }
 
-static char get(Lexer *lex) {
-    return lex->src[lex->pos++];
+static char tok_peek(Tokenizer *t) {
+    if (t->pos >= t->len) return '\0';
+    return t->input[t->pos];
 }
 
-static void skip_ws(Lexer *lex) {
-    while (isspace(peek(lex))) get(lex);
-    if (peek(lex) == ';') {
-        while (peek(lex) && peek(lex) != '\n') get(lex);
-        skip_ws(lex);
+static char tok_advance(Tokenizer *t) {
+    if (t->pos >= t->len) return '\0';
+    char c = t->input[t->pos++];
+    if (c == '\n') {
+        t->line++;
+        t->col = 1;
+    } else {
+        t->col++;
     }
+    return c;
 }
 
-static char *substr(const char *s, size_t start, size_t end) {
-    size_t len = end - start;
-    char *res = malloc(len + 1);
-    memcpy(res, s + start, len);
-    res[len] = '\0';
-    return res;
-}
-
-Token next_token(Lexer *lex) {
-    skip_ws(lex);
-    char c = peek(lex);
-
-    if (c == '\0') {
-        return (Token){T_EOF, NULL};
-    }
-
-    if (isdigit(c) || (c == '-' && isdigit(lex->src[lex->pos + 1]))) {
-        size_t start = lex->pos;
-        if (c == '-') get(lex);
-        while (isdigit(peek(lex))) get(lex);
-        return (Token){T_NUMBER, substr(lex->src, start, lex->pos)};
-    }
-
-    if (isalpha(c) || c == '_') {
-        size_t start = lex->pos;
-        while (isalnum(peek(lex)) || peek(lex) == '_') get(lex);
-        return (Token){T_ID, substr(lex->src, start, lex->pos)};
-    }
-
-    if (c == '"') {
-        get(lex);
-        size_t start = lex->pos;
-        while (peek(lex) && peek(lex) != '"') {
-            if (peek(lex) == '\\') get(lex);
-            get(lex);
+static void tok_skip_whitespace(Tokenizer *t) {
+    while (1) {
+        char c = tok_peek(t);
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            tok_advance(t);
+        } else if (c == ';') {
+            while (tok_peek(t) && tok_peek(t) != '\n') {
+                tok_advance(t);
+            }
+        } else {
+            break;
         }
-        size_t end = lex->pos;
-        if (peek(lex) == '"') get(lex);
-        return (Token){T_STRING, substr(lex->src, start, end)};
-    }
-
-    if (c == '{') {
-        int depth = 0;
-        size_t start = lex->pos;
-        do {
-            if (peek(lex) == '{') depth++;
-            if (peek(lex) == '}') depth--;
-            get(lex);
-        } while (peek(lex) && depth > 0);
-        return (Token){T_BLOCK, substr(lex->src, start, lex->pos)};
-    }
-
-    if (c == '*' || c == ':' || c == '@' || c == '.' || c == '=' || c == '}') {
-        get(lex);
-        return (Token){T_SYMBOL, substr(lex->src, lex->pos - 1, lex->pos)};
-    }
-
-    size_t start = lex->pos;
-    get(lex);
-    return (Token){T_ID, substr(lex->src, start, lex->pos)};
-}
-
-const char* token_to_str(P_TokenType t) {
-    switch(t) {
-        case T_NUMBER: return "NUMBER";
-        case T_ID: return "ID";
-        case T_STRING: return "STRING";
-        case T_BLOCK: return "BLOCK";
-        case T_SYMBOL: return "SYMBOL";
-        case T_EOF: return "EOF";
-        default: return "UNKNOWN";
     }
 }
 
-static Token peek_parser(Parser *p) {
-    if (p->current >= p->count) {
-        return (Token){T_EOF, NULL};
-    }
-    return p->tokens[p->current];
-}
-
-static Token advance(Parser *p) {
-    if (p->current >= p->count) {
-        return (Token){T_EOF, NULL};
-    }
-    return p->tokens[p->current++];
-}
-
-static bool match(Parser *p, P_TokenType type) {
-    Token tok = peek_parser(p);
-    return tok.type == type;
-}
-
-static Token expect(Parser *p, P_TokenType type) {
-    Token tok = advance(p);
-    if (tok.type != type) {
-        fprintf(stderr, "Parse error: expected %s, got %s\n",
-                token_to_str(type), token_to_str(tok.type));
-        exit(1);
-    }
+static Token tok_make_token(TokenKind kind, char *lexeme, int line, int col) {
+    Token tok;
+    tok.kind = kind;
+    tok.lexeme = lexeme;
+    tok.line = line;
+    tok.col = col;
     return tok;
 }
 
-static void parse_mem_block(Parser *p) {
-    expect(p, T_ID);
-    Token block = expect(p, T_BLOCK);
-
-    Lexer inner_lex = {block.value + 1, 0};
-
-    while (inner_lex.src[inner_lex.pos] && inner_lex.src[inner_lex.pos] != '}') {
-        skip_ws(&inner_lex);
-
-        if (inner_lex.src[inner_lex.pos] == '}') break;
-
-        Token name = next_token(&inner_lex);
-        if (name.type == T_EOF) break;
-
-        if (name.type == T_SYMBOL && name.value && strcmp(name.value, "}") == 0) {
-            if (name.value) free(name.value);
-            break;
-        }
-
-        if (name.type != T_ID) {
-            if (name.value) free(name.value);
-            continue;
-        }
-
-        Token colon = next_token(&inner_lex);
-        if (colon.type != T_SYMBOL || strcmp(colon.value, ":") != 0) {
-            fprintf(stderr, "Expected ':' after memory name\n");
-            if (name.value) free(name.value);
-            if (colon.value) free(colon.value);
-            continue;
-        }
-
-        Token value = next_token(&inner_lex);
-        if (value.type == T_NUMBER) {
-            Word w = WORD(atoll(value.value));
-            char *name_copy = strdup(name.value);
-            xmap_set(&p->vm->memory, name_copy, w);
-        } // TODO: add more types
-
-        if (name.value) free(name.value);
-        if (colon.value) free(colon.value);
-        if (value.value) free(value.value);
-    }
+static char *tok_extract_range(const char *src, size_t start, size_t end) {
+    size_t len = end - start;
+    char *s = malloc(len + 1);
+    memcpy(s, src + start, len);
+    s[len] = '\0';
+    return s;
 }
 
-static Instruction** parse_instruction(Parser *p, size_t *inst_count) {
-    *inst_count = 0;
-    Token tok = peek_parser(p);
+static Token tok_next(Tokenizer *t) {
+    tok_skip_whitespace(t);
 
-    if (tok.type == T_ID && strcmp(tok.value, "mem") == 0) {
-        advance(p);
-        Token dot = expect(p, T_SYMBOL);
-        Token name = expect(p, T_ID);
-        Token eq = advance(p);
-
-        if (eq.type == T_SYMBOL && strcmp(eq.value, "=") == 0) {
-            Token value_tok = advance(p);
-
-            Instruction **instructions = malloc(sizeof(Instruction*) * 2);
-            *inst_count = 2;
-
-            instructions[0] = malloc(sizeof(Instruction));
-
-            if (value_tok.type == T_NUMBER) {
-                instructions[0]->type = Push;
-                instructions[0]->arg = WORD((void*)(intptr_t)atoi(value_tok.value));
-            }
-            else if (value_tok.type == T_SYMBOL && strcmp(value_tok.value, "*") == 0) {
-                Token mem_keyword = expect(p, T_ID);
-                Token mem_dot = expect(p, T_SYMBOL);
-                Token mem_name = expect(p, T_ID);
-
-                instructions[0]->type = DerefMemory;
-                instructions[0]->arg = WORD(strdup(mem_name.value));
-            }
-            else {
-                fprintf(stderr, "Unsupported value type in memory assignment\n");
-                free(instructions[0]);
-                free(instructions);
-                return NULL;
-            }
-
-            instructions[1] = malloc(sizeof(Instruction));
-            instructions[1]->type = AssignMemory;
-            instructions[1]->arg = WORD(strdup(name.value));
-
-            return instructions;
-        }
-
-        return NULL;
+    if (tok_peek(t) == '\0') {
+        return tok_make_token(TOK_EOF, NULL, t->line, t->col);
     }
 
-    tok = advance(p);
-    Instruction **instructions = malloc(sizeof(Instruction*));
-    *inst_count = 1;
-    instructions[0] = malloc(sizeof(Instruction));
-    Instruction *inst = instructions[0];
+    int start_line = t->line;
+    int start_col = t->col;
+    char c = tok_peek(t);
 
-    if (tok.type == T_ID) {
-        if (strcmp(tok.value, "push") == 0) {
-            inst->type = Push;
-            Token arg = advance(p);
-            if (arg.type == T_NUMBER) {
-                inst->arg = word_uint64((uint64_t)atoll(arg.value));
-            } else if (arg.type == T_STRING) {
-                inst->arg = word_string(strdup(arg.value));
-            } else if (arg.type == T_ID && strcmp(arg.value, "mem") == 0) {
-                expect(p, T_SYMBOL);
-                Token mem_name = expect(p, T_ID);
-                inst->type = DerefMemory;
-                inst->arg = WORD(strdup(mem_name.value));
-            } else {
-                fprintf(stderr, "Error: push expects a number or string or memory\n");
-                free(inst);
-                free(instructions);
-                return NULL;
+    if (c == '{') {
+        tok_advance(t);
+        return tok_make_token(TOK_LBRACE, NULL, start_line, start_col);
+    }
+
+    if (c == '}') {
+        tok_advance(t);
+        return tok_make_token(TOK_RBRACE, NULL, start_line, start_col);
+    }
+
+    if (c == ':') {
+        tok_advance(t);
+        return tok_make_token(TOK_COLON, NULL, start_line, start_col);
+    }
+
+    if (c == '.') {
+        tok_advance(t);
+        return tok_make_token(TOK_DOT, NULL, start_line, start_col);
+    }
+
+    if (c == '@') {
+        tok_advance(t);
+        return tok_make_token(TOK_AT, NULL, start_line, start_col);
+    }
+
+    if (c == '*') {
+        tok_advance(t);
+        return tok_make_token(TOK_STAR, NULL, start_line, start_col);
+    }
+
+    if (c == '=') {
+        tok_advance(t);
+        return tok_make_token(TOK_EQ, NULL, start_line, start_col);
+    }
+
+    if (c == '"') {
+        tok_advance(t);
+        size_t start = t->pos;
+        while (tok_peek(t) && tok_peek(t) != '"') {
+            if (tok_peek(t) == '\\') {
+                tok_advance(t);
             }
-        } else if (strcmp(tok.value, "drop") == 0) {
-            inst->type = Drop;
-            inst->arg = WORD(NULL);
+            tok_advance(t);
         }
-        else if (strcmp(tok.value, "halt") == 0 || strcmp(tok.value, "ret") == 0) {
-            inst->type = Halt;
-            inst->arg = WORD(NULL);
-        }
-        else if (strcmp(tok.value, "call") == 0) {
-            Token name = advance(p);
-            if (name.type == T_SYMBOL && strcmp(name.value, "@") == 0) {
-                Token fn_name = expect(p, T_ID);
-                inst->type = CallExtern;
-                inst->arg = WORD(strdup(fn_name.value));
-            } else if (name.type == T_ID) {
-                inst->type = Call;
-                inst->arg = WORD(strdup(name.value));
-            }
-        } else if (strcmp(tok.value, "jmp") == 0) {
-            Token target = advance(p);
-            if (target.type == T_NUMBER) {
-                inst->type = Jmp;
-                inst->arg = WORD(atoi(target.value));
-            } // TODO: add labels
-        } else if (strcmp(tok.value, "jmpif") == 0) {
-            Token target = advance(p);
-            if (target.type == T_NUMBER) {
-                inst->type = JmpIf;
-                inst->arg = WORD(atoi(target.value));
-            } // TODO: add labels
-        }
-        else {
-            fprintf(stderr, "Unknown instruction: %s\n", tok.value);
-            free(inst);
-            free(instructions);
-            return NULL;
-        }
-    }
-    else if (tok.type == T_SYMBOL && strcmp(tok.value, "*") == 0) {
-        Token mem = expect(p, T_ID);
-        Token dot = expect(p, T_SYMBOL);
-        Token name = expect(p, T_ID);
-
-        inst->type = DerefMemory;
-        inst->arg = WORD(strdup(name.value));
-    }
-    else {
-        fprintf(stderr, "Unexpected token: %s\n", token_to_str(tok.type));
-        free(inst);
-        free(instructions);
-        return NULL;
+        size_t end = t->pos;
+        if (tok_peek(t) == '"') tok_advance(t);
+        char *lexeme = tok_extract_range(t->input, start, end);
+        return tok_make_token(TOK_STR, lexeme, start_line, start_col);
     }
 
-    return instructions;
+    if (isdigit(c) || (c == '-' && t->pos + 1 < t->len && isdigit(t->input[t->pos + 1]))) {
+        size_t start = t->pos;
+        if (c == '-') tok_advance(t);
+        while (isdigit(tok_peek(t))) tok_advance(t);
+        char *lexeme = tok_extract_range(t->input, start, t->pos);
+        return tok_make_token(TOK_NUM, lexeme, start_line, start_col);
+    }
+
+    if (isalpha(c) || c == '_') {
+        size_t start = t->pos;
+        while (isalnum(tok_peek(t)) || tok_peek(t) == '_') tok_advance(t);
+        char *lexeme = tok_extract_range(t->input, start, t->pos);
+        return tok_make_token(TOK_IDENT, lexeme, start_line, start_col);
+    }
+
+    tok_advance(t);
+    return tok_make_token(TOK_EOF, NULL, start_line, start_col);
 }
 
-static void parse_function(Parser *p) {
-    Token name = expect(p, T_ID);
-    Token block = expect(p, T_BLOCK);
-
-    Function *fn = malloc(sizeof(Function));
-    xvec_init(&fn->instructions, 0);
-    xvec_init(&fn->labels, 0);
-
-    Lexer inner_lex = {block.value + 1, 0};
-    Parser inner_parser;
-    inner_parser.vm = p->vm;
-    inner_parser.current = 0;
-
-    Token *inner_tokens = NULL;
-    size_t inner_count = 0;
-    size_t inner_capacity = 0;
-
-    Token inner_tok;
-    while ((inner_tok = next_token(&inner_lex)).type != T_EOF) {
-        if (inner_tok.value && strcmp(inner_tok.value, "}") == 0) {
-            free(inner_tok.value);
-            break;
-        }
-
-        if (inner_count >= inner_capacity) {
-            inner_capacity = inner_capacity == 0 ? 8 : inner_capacity * 2;
-            inner_tokens = realloc(inner_tokens, inner_capacity * sizeof(Token));
-        }
-
-        inner_tokens[inner_count++] = inner_tok;
-    }
-
-    inner_parser.tokens = inner_tokens;
-    inner_parser.count = inner_count;
-
-    while (inner_parser.current < inner_parser.count) {
-        size_t inst_count = 0;
-        Instruction **instructions = parse_instruction(&inner_parser, &inst_count);
-
-        if (instructions) {
-            for (size_t i = 0; i < inst_count; i++) {
-                xvec_push(&fn->instructions, WORD(instructions[i]));
-            }
-            free(instructions);
-        }
-    }
-
-    for (size_t i = 0; i < inner_count; i++) {
-        if (inner_tokens[i].value) free(inner_tokens[i].value);
-    }
-    free(inner_tokens);
-
-    char *name_copy = strdup(name.value);
-    xmap_set(&p->vm->functions, name_copy, WORD(fn));
-}
-
-static void parse(Parser *p) {
-    while (!match(p, T_EOF)) {
-        Token tok = peek_parser(p);
-
-        if (tok.type == T_ID) {
-            if (strcmp(tok.value, "mem") == 0) {
-                parse_mem_block(p);
-            } else {
-                parse_function(p);
-            }
-        } else {
-            advance(p);
-        }
-    }
-}
-
-ProstStatus assemble(ProstVM *vm, const char *src) {
-    Lexer lex = {src, 0};
+static Token *tok_tokenize(const char *src, size_t *out_count) {
+    Tokenizer t;
+    tok_init(&t, src);
 
     Token *tokens = NULL;
     size_t count = 0;
     size_t capacity = 0;
 
-    Token tok;
-    while ((tok = next_token(&lex)).type != T_EOF) {
+    while (1) {
+        Token tok = tok_next(&t);
+
         if (count >= capacity) {
-            capacity = capacity == 0 ? 8 : capacity * 2;
+            capacity = capacity == 0 ? 16 : capacity * 2;
             tokens = realloc(tokens, capacity * sizeof(Token));
         }
+
         tokens[count++] = tok;
+
+        if (tok.kind == TOK_EOF) break;
     }
 
-    Parser parser;
+    *out_count = count;
+    return tokens;
+}
+
+static Token parser_peek(ParserState *p) {
+    if (p->pos >= p->count) {
+        return (Token){TOK_EOF, NULL, 0, 0};
+    }
+    return p->tokens[p->pos];
+}
+
+static Token parser_advance(ParserState *p) {
+    if (p->pos >= p->count) {
+        return (Token){TOK_EOF, NULL, 0, 0};
+    }
+    return p->tokens[p->pos++];
+}
+
+static bool parser_check(ParserState *p, TokenKind kind) {
+    return parser_peek(p).kind == kind;
+}
+
+static Token parser_expect(ParserState *p, TokenKind kind) {
+    Token tok = parser_advance(p);
+    if (tok.kind != kind) {
+        fprintf(stderr, "Parse error at %d:%d: unexpected token\n", tok.line, tok.col);
+        exit(1);
+    }
+    return tok;
+}
+
+static bool parser_match(ParserState *p, TokenKind kind) {
+    if (parser_check(p, kind)) {
+        parser_advance(p);
+        return true;
+    }
+    return false;
+}
+
+static void parse_mem_decl(ParserState *p) {
+    parser_expect(p, TOK_IDENT);
+    parser_expect(p, TOK_LBRACE);
+
+    while (!parser_check(p, TOK_RBRACE) && !parser_check(p, TOK_EOF)) {
+        Token name = parser_expect(p, TOK_IDENT);
+        parser_expect(p, TOK_COLON);
+        Token value = parser_expect(p, TOK_NUM);
+
+        Word w = WORD(atoll(value.lexeme));
+        char *name_copy = strdup(name.lexeme);
+        xmap_set(&p->vm->memory, name_copy, w);
+    }
+
+    parser_expect(p, TOK_RBRACE);
+}
+
+static Instruction *make_inst(InstructionType type, Word arg) {
+    Instruction *inst = malloc(sizeof(Instruction));
+    inst->type = type;
+    inst->arg = arg;
+    return inst;
+}
+
+static XVec parse_func_body(ParserState *p) {
+    XVec instructions;
+    xvec_init(&instructions, 0);
+
+    while (!parser_check(p, TOK_RBRACE) && !parser_check(p, TOK_EOF)) {
+        Token tok = parser_peek(p);
+
+        if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "push") == 0) {
+            parser_advance(p);
+            Token arg = parser_advance(p);
+
+            if (arg.kind == TOK_NUM) {
+                Instruction *inst = make_inst(Push, word_uint64((uint64_t)atoll(arg.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            } else if (arg.kind == TOK_STR) {
+                Instruction *inst = make_inst(Push, word_string(strdup(arg.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            } else if (arg.kind == TOK_IDENT && strcmp(arg.lexeme, "mem") == 0) {
+                parser_expect(p, TOK_DOT);
+                Token name = parser_expect(p, TOK_IDENT);
+                Instruction *inst = make_inst(DerefMemory, WORD(strdup(name.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            }
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "drop") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Drop, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && (strcmp(tok.lexeme, "halt") == 0 || strcmp(tok.lexeme, "ret") == 0)) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Halt, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "call") == 0) {
+            parser_advance(p);
+
+            if (parser_check(p, TOK_AT)) {
+                parser_advance(p);
+                Token name = parser_expect(p, TOK_IDENT);
+                Instruction *inst = make_inst(CallExtern, WORD(strdup(name.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            } else {
+                Token name = parser_expect(p, TOK_IDENT);
+                Instruction *inst = make_inst(Call, WORD(strdup(name.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            }
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmp") == 0) {
+            parser_advance(p);
+            Token target = parser_expect(p, TOK_NUM);
+            Instruction *inst = make_inst(Jmp, WORD(atoi(target.lexeme)));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmpif") == 0) {
+            parser_advance(p);
+            Token target = parser_expect(p, TOK_NUM);
+            Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "mem") == 0) {
+            parser_advance(p);
+            parser_expect(p, TOK_DOT);
+            Token name = parser_expect(p, TOK_IDENT);
+            parser_expect(p, TOK_EQ);
+
+            if (parser_check(p, TOK_NUM)) {
+                Token val = parser_advance(p);
+                Instruction *push_inst = make_inst(Push, WORD((void*)(intptr_t)atoi(val.lexeme)));
+                xvec_push(&instructions, WORD(push_inst));
+                Instruction *assign_inst = make_inst(AssignMemory, WORD(strdup(name.lexeme)));
+                xvec_push(&instructions, WORD(assign_inst));
+            } else if (parser_check(p, TOK_STAR)) {
+                parser_advance(p);
+                parser_expect(p, TOK_IDENT);
+                parser_expect(p, TOK_DOT);
+                Token mem_name = parser_expect(p, TOK_IDENT);
+                Instruction *deref_inst = make_inst(DerefMemory, WORD(strdup(mem_name.lexeme)));
+                xvec_push(&instructions, WORD(deref_inst));
+                Instruction *assign_inst = make_inst(AssignMemory, WORD(strdup(name.lexeme)));
+                xvec_push(&instructions, WORD(assign_inst));
+            }
+        } else if (tok.kind == TOK_STAR) {
+            parser_advance(p);
+            parser_expect(p, TOK_IDENT);
+            parser_expect(p, TOK_DOT);
+            Token name = parser_expect(p, TOK_IDENT);
+            Instruction *inst = make_inst(DerefMemory, WORD(strdup(name.lexeme)));
+            xvec_push(&instructions, WORD(inst));
+        } else {
+            parser_advance(p);
+        }
+    }
+
+    return instructions;
+}
+
+static void parse_func_decl(ParserState *p) {
+    Token name = parser_expect(p, TOK_IDENT);
+    parser_expect(p, TOK_LBRACE);
+
+    XVec instructions = parse_func_body(p);
+
+    parser_expect(p, TOK_RBRACE);
+
+    Function *fn = malloc(sizeof(Function));
+    fn->instructions = instructions;
+    xvec_init(&fn->labels, 0);
+
+    char *name_copy = strdup(name.lexeme);
+    xmap_set(&p->vm->functions, name_copy, WORD(fn));
+}
+
+static void parse_toplevel(ParserState *p) {
+    while (!parser_check(p, TOK_EOF)) {
+        Token tok = parser_peek(p);
+
+        if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "mem") == 0) {
+            parse_mem_decl(p);
+        } else if (tok.kind == TOK_IDENT) {
+            parse_func_decl(p);
+        } else {
+            parser_advance(p);
+        }
+    }
+}
+
+static ProstStatus assemble(ProstVM *vm, const char *src) {
+    size_t token_count;
+    Token *tokens = tok_tokenize(src, &token_count);
+
+    ParserState parser;
     parser.tokens = tokens;
-    parser.count = count;
-    parser.current = 0;
+    parser.pos = 0;
+    parser.count = token_count;
     parser.vm = vm;
 
-    parse(&parser);
+    parse_toplevel(&parser);
 
-    for (size_t i = 0; i < count; i++) {
-        if (tokens[i].value) free(tokens[i].value);
+    for (size_t i = 0; i < token_count; i++) {
+        if (tokens[i].lexeme) free(tokens[i].lexeme);
     }
     free(tokens);
 
     return P_OK;
 }
 
-char* read_file(const char *path) {
+static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Error: Could not open file '%s'\n", path);
@@ -454,7 +430,7 @@ char* read_file(const char *path) {
     return content;
 }
 
-void print_usage(const char *prog) {
+static void print_usage(const char *prog) {
     printf("Usage: %s [OPTIONS] <input_file>\n\n", prog);
     printf("Options:\n");
     printf("  -h, --help           Show this help message\n");
@@ -466,17 +442,7 @@ void print_usage(const char *prog) {
     printf("\nFile Extensions:\n");
     printf("  .pa  - Prost Assembly (source code)\n");
     printf("  .pco - Prost Compiled Object (bytecode)\n");
-    printf("\nNotes:\n");
-    printf("  - .pco files are automatically treated as bytecode (no compilation)\n");
-    printf("  - .pa files are compiled by default unless -c is specified\n");
-    printf("\nExamples:\n");
-    printf("  %s program.pa                       # Compile and run\n", prog);
-    printf("  %s -r program.pa                    # Compile only\n", prog);
-    printf("  %s program.pco                      # Run bytecode (auto-detected)\n", prog);
-    printf("  %s -c program.pa                    # Skip compilation, run directly\n", prog);
-    printf("  %s -o custom.pco program.pa         # Custom output file\n", prog);
 }
-
 
 int main(int argc, char **argv) {
     bool dont_run = false;
@@ -499,7 +465,7 @@ int main(int argc, char **argv) {
     int opt;
     int option_index = 0;
 
-    while ((opt = getopt_long(argc, argv, "ho:rcv", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "ho:rcvd:", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
