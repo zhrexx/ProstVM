@@ -3,14 +3,14 @@
 #include "prost.h"
 
 void print(ProstVM *vm) {
-    Word w = p_pop(vm);
+    Word w = p_peek(vm);
 
     switch (w.type) {
         case WINT:
             printf("%d\n", w.as_int);
             break;
         case WUINT64:
-            printf("%lu\n", w.as_uint64);
+            printf("%llu\n", w.as_uint64);
             break;
         case WPOINTER: // treat as string
             printf("%s\n", (char *)w.as_pointer);
@@ -103,6 +103,7 @@ void register_std(ProstVM *vm) {
     p_register_external(vm, "sub", sub);
     p_register_external(vm, "mul", mul);
     p_register_external(vm, "divi", divi);
+    p_register_external(vm, "cmp", cmp);
 }
 
 

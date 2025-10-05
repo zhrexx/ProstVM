@@ -15,10 +15,10 @@ typedef enum {
     T_BLOCK,
     T_SYMBOL,
     T_EOF,
-} TokenType;
+} P_TokenType;
 
 typedef struct {
-    TokenType type;
+    P_TokenType type;
     char *value;
 } Token;
 
@@ -112,7 +112,7 @@ Token next_token(Lexer *lex) {
     return (Token){T_ID, substr(lex->src, start, lex->pos)};
 }
 
-const char* token_to_str(TokenType t) {
+const char* token_to_str(P_TokenType t) {
     switch(t) {
         case T_NUMBER: return "NUMBER";
         case T_ID: return "ID";
@@ -138,12 +138,12 @@ static Token advance(Parser *p) {
     return p->tokens[p->current++];
 }
 
-static bool match(Parser *p, TokenType type) {
+static bool match(Parser *p, P_TokenType type) {
     Token tok = peek_parser(p);
     return tok.type == type;
 }
 
-static Token expect(Parser *p, TokenType type) {
+static Token expect(Parser *p, P_TokenType type) {
     Token tok = advance(p);
     if (tok.type != type) {
         fprintf(stderr, "Parse error: expected %s, got %s\n",
@@ -270,8 +270,7 @@ static Instruction** parse_instruction(Parser *p, size_t *inst_count) {
                 free(instructions);
                 return NULL;
             }
-        }
-        else if (strcmp(tok.value, "drop") == 0) {
+        } else if (strcmp(tok.value, "drop") == 0) {
             inst->type = Drop;
             inst->arg = WORD(NULL);
         }
@@ -289,6 +288,18 @@ static Instruction** parse_instruction(Parser *p, size_t *inst_count) {
                 inst->type = Call;
                 inst->arg = WORD(strdup(name.value));
             }
+        } else if (strcmp(tok.value, "jmp") == 0) {
+            Token target = advance(p);
+            if (target.type == T_NUMBER) {
+                inst->type = Jmp;
+                inst->arg = WORD(atoi(target.value));
+            } // TODO: add labels
+        } else if (strcmp(tok.value, "jmpif") == 0) {
+            Token target = advance(p);
+            if (target.type == T_NUMBER) {
+                inst->type = JmpIf;
+                inst->arg = WORD(atoi(target.value));
+            } // TODO: add labels
         }
         else {
             fprintf(stderr, "Unknown instruction: %s\n", tok.value);
