@@ -100,6 +100,8 @@ void p_push(ProstVM *vm, Word w);                                           // P
 Word p_peek(ProstVM *vm);                                                   // Peeks at the top value of the stack (sets vm->status)
 Word p_expect(ProstVM *vm, WordType t);                                     // Pops and type-checks the top value of the stack
 
+void p_throw_warning(ProstVM *vm, const char *msg, ...);                    // Throws a warning
+
 // Adapted from Sean Barrett's single-header library pattern
 // Define PROST_IMPLEMENTATION in one source file before including prost.h
 // to compile the implementation once, avoiding multiple definition errors.
@@ -654,6 +656,15 @@ Word p_expect(ProstVM *vm, WordType t) {
     return w;
 }
 // END SECTION STACK MANIPULATION
+
+void p_throw_warning(ProstVM *vm, const char *msg, ...) {
+    va_list args;
+    va_start(args, msg);
+    printf("[PROST %s:%zu]", vm->current_function, vm->current_ip);
+    vprintf(msg, args);
+    printf("\n");
+    va_end(args);
+}
 
 #endif
 

@@ -13,7 +13,9 @@ typedef enum {
     TOK_IDENT,
     TOK_STR,
     TOK_LBRACE,
+    TOK_LPAREN,
     TOK_RBRACE,
+    TOK_RPAREN,
     TOK_COLON,
     TOK_DOT,
     TOK_AT,
@@ -120,6 +122,16 @@ static Token tok_next(Tokenizer *t) {
     if (c == '}') {
         tok_advance(t);
         return tok_make_token(TOK_RBRACE, NULL, start_line, start_col);
+    }
+
+    if (c == '(') {
+        tok_advance(t);
+        return tok_make_token(TOK_LPAREN, NULL, start_line, start_col);
+    }
+
+    if (c == ')') {
+        tok_advance(t);
+        return tok_make_token(TOK_RPAREN, NULL, start_line, start_col);
     }
 
     if (c == ':') {
@@ -640,6 +652,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    unload_std();
     p_free(vm);
     return 0;
 }

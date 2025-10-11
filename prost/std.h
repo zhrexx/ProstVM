@@ -96,15 +96,62 @@ void cmp(ProstVM *vm) {
     p_push(vm, WORD(0));
 }
 
+void neg(ProstVM *vm) {
+    Word w = p_pop(vm);
+
+    switch (w.type) {
+        case WINT:
+            p_push(vm, WORD(-w.as_int));
+            break;
+        case WUINT64:
+            p_push(vm, WORD(-w.as_uint64));
+            break;
+        default:
+            p_throw_warning(vm, "Trying to negate non-numeric value");
+            p_push(vm, WORD(0));
+            break;
+    }
+}
+
+void typeof_(ProstVM *vm) {
+    Word w = p_peek(vm);
+    p_push(vm, WORD(word_type_to_str(w.type)));
+}
+
+
+static XVec allocation_state = {0};
+
+// Allocates memory and saves pointer
+void alloc(ProstVM* vm) {
+    const int size = p_expect(vm, WUINT64).as_uint64;
+    void *m = malloc(size);
+    xvec_push(&allocation_state, WORD(m));
+
+    p_push(vm, WORD(m));
+}
+
+
 
 void register_std(ProstVM *vm) {
+    allocation_state = xvec_create(1);
+
     p_register_external(vm, "print", print);
     p_register_external(vm, "add", add);
     p_register_external(vm, "sub", sub);
     p_register_external(vm, "mul", mul);
     p_register_external(vm, "divi", divi);
     p_register_external(vm, "cmp", cmp);
+    p_register_external(vm, "neg", neg);
+    p_register_external(vm, "alloc", alloc);
+    p_register_external(vm, "typeof", typeof_);
 }
 
+void unload_std() {
+    for (int i = 0; i < xvec_len(&allocation_state); i++) {
+        void *ptr = xvec_get(&allocation_state, i)->as_pointer;
+        if (ptr != NULL) free(ptr);
+    }
+    xvec_free(&allocation_state);
+}
 
 #endif //STD_H
