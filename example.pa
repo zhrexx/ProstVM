@@ -1,20 +1,3 @@
+
 __entry {
-    push 0
-
-    .loop:
-    dup
-    call @print
-
-    push 1
-    call @add
-
-    dup
-    push 1000000
-    lt
-    call @neg
-
-    jmpif .loop
-
-    drop
-    halt
 }
