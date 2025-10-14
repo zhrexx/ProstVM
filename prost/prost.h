@@ -1,3 +1,5 @@
+// TODO: add, sub, mul, divi, cmp
+
 #ifndef PROST_H
 #define PROST_H
 
@@ -455,11 +457,30 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
 
     switch (instruction.type) {
         case Push: // TODO: check if registername then from register else push string
+            if (instruction.arg.type == WPOINTER && instruction.arg.owns_memory) {
+                for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+                    if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
+                        p_push(vm, vm->registers[i].value);
+                        return vm->status;
+                    }
+                }
+            }
+
             p_push(vm, instruction.arg);
             break;
 
         case Pop: // TODO: to register
-            p_pop(vm);
+            if (instruction.arg.type == WPOINTER && instruction.arg.owns_memory) {
+                for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+                    if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
+                        Word w = p_pop(vm);
+                        vm->registers[i].value = w;
+                        return vm->status;
+                    }
+                }
+            }
+
+            vm->status = P_ERR_INVALID_INDEX; // TODO: maybe seperate error (like P_ERR_INVALID_POP_CALL)
             break;
 
         case Drop:
