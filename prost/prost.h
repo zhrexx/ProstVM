@@ -1,4 +1,3 @@
-// TODO: labels, jmp, jmpif
 #ifndef PROST_H
 #define PROST_H
 
@@ -16,15 +15,16 @@
 #include "dependencies/xmap.h"
 #include "dependencies/bb.h"
 
+#define P_REGISTERS_COUNT 32
+
 typedef enum {
     Push,
-    Drop,
+    Pop, // stack -> register
+    Drop, // stack -> void
     Halt,
     Call,
     CallExtern,
     Return,
-    DerefMemory,
-    AssignMemory,
     Jmp,
     JmpIf,
 } InstructionType;
@@ -33,6 +33,13 @@ typedef struct {
     InstructionType type;
     Word arg;
 } Instruction;
+
+
+// NOTE: its not a register in common sense in Prost its just for simplifying access of important values
+typedef struct {
+    const char *name;
+    Word value;
+} ProstRegister;
 
 typedef enum {
     P_OK = 0,
@@ -53,9 +60,10 @@ typedef enum {
  * allowing them to return the value directly while still reporting errors.
  */
 typedef struct ProstVM {
+    ProstRegister registers[P_REGISTERS_COUNT];
+
     XVec stack;                 // Word
     XVec call_stack;            // CallFrame*
-    XMap memory;                // XEntry(name, Word value)
 
     XMap functions;             // XEntry(name, Function*)
     XMap external_functions;    // XEntry(name, p_external_function)
@@ -71,7 +79,6 @@ typedef struct ProstVM {
 
 typedef struct {
     XVec instructions;
-    XVec labels;
 } Function;
 
 typedef struct {
@@ -107,6 +114,8 @@ void p_throw_warning(ProstVM *vm, const char *msg, ...);                    // T
 // to compile the implementation once, avoiding multiple definition errors.
 #ifdef PROST_IMPLEMENTATION
 
+char *format(char *fmt, ...) { va_list args; va_start(args, fmt); int len = vsnprintf(NULL, 0, fmt, args); va_end(args); char *str = malloc(len + 1); va_start(args, fmt); vsprintf(str, fmt, args); va_end(args); return str; }
+
 // SECTION INIT-DEINIT
 ProstVM *p_init() {
     ProstVM *vm = (ProstVM *)malloc(sizeof(ProstVM));
@@ -116,13 +125,18 @@ ProstVM *p_init() {
     xvec_init(&vm->call_stack, 0);
     xmap_init(&vm->functions, 0);
     xmap_init(&vm->external_functions, 0);
-    xmap_init(&vm->memory, 0);
 
     vm->status = P_OK;
     vm->running = false;
     vm->exit_code = 0;
     vm->current_function = NULL;
     vm->current_ip = 0;
+
+    for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+        ProstRegister *r = &vm->registers[i];
+        r->name = format("r%d", i);
+        r->value = WORD(0);
+    }
 
     return vm;
 }
@@ -145,14 +159,18 @@ void p_free(ProstVM *vm) {
         Function *fn = (Function *)iter.value.as_pointer;
         if (fn) {
             xvec_free(&fn->instructions);
-            xvec_free(&fn->labels);
             free(fn);
         }
     }
 
     xmap_free(&vm->functions);
     xmap_free(&vm->external_functions);
-    xmap_free(&vm->memory);
+
+    for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+        ProstRegister *r = &vm->registers[i];
+        free(r->name);
+        r->value = WORD(0);
+    }
 
     free(vm);
 }
@@ -230,20 +248,6 @@ ByteBuf p_to_bytecode(ProstVM *vm) {
     bb_append(&bb, "PROST", 6);
     bb_push(&bb, 1);
 
-    uint32_t memory_count = (uint32_t)vm->memory.size;
-    bb_append(&bb, &memory_count, sizeof(uint32_t));
-
-    for (size_t i = 0; i < vm->memory.size; i++) {
-        XEntry entry = vm->memory.entries[i];
-        const char *var_name = entry.key;
-
-        uint32_t name_len = (uint32_t)strlen(var_name);
-        bb_append(&bb, &name_len, sizeof(uint32_t));
-        bb_append(&bb, var_name, name_len);
-
-        bb_append(&bb, &entry.value, sizeof(Word));
-    }
-
     uint32_t fn_count = (uint32_t)vm->functions.size;
     bb_append(&bb, &fn_count, sizeof(uint32_t));
 
@@ -261,9 +265,6 @@ ByteBuf p_to_bytecode(ProstVM *vm) {
         uint32_t inst_count = (uint32_t)xvec_len(&fn->instructions);
         bb_append(&bb, &inst_count, sizeof(uint32_t));
 
-        uint32_t label_count = (uint32_t)xvec_len(&fn->labels);
-        bb_append(&bb, &label_count, sizeof(uint32_t));
-
         for (size_t j = 0; j < inst_count; j++) {
             Word *inst_word = xvec_get(&fn->instructions, j);
             if (!inst_word) continue;
@@ -275,9 +276,7 @@ ByteBuf p_to_bytecode(ProstVM *vm) {
 
             switch (inst->type) {
                 case Call:
-                case CallExtern:
-                case DerefMemory:
-                case AssignMemory: {
+                case CallExtern: {
                     const char *str = (const char *)inst->arg.as_pointer;
                     uint32_t str_len = str ? (uint32_t)strlen(str) : 0;
                     bb_append(&bb, &str_len, sizeof(uint32_t));
@@ -289,13 +288,6 @@ ByteBuf p_to_bytecode(ProstVM *vm) {
                 default:
                     bb_append(&bb, &inst->arg, sizeof(Word));
                     break;
-            }
-        }
-
-        for (size_t j = 0; j < label_count; j++) {
-            Word *label = xvec_get(&fn->labels, j);
-            if (label) {
-                bb_append(&bb, label, sizeof(Word));
             }
         }
     }
@@ -325,28 +317,6 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
         return vm->status;
     }
 
-    uint32_t memory_count;
-    memcpy(&memory_count, ptr, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-
-    for (uint32_t i = 0; i < memory_count; i++) {
-        uint32_t key_len;
-        memcpy(&key_len, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
-
-        char *key = malloc(key_len + 1);
-        memcpy(key, ptr, key_len);
-        key[key_len] = 0;
-        ptr += key_len;
-
-        Word value;
-        memcpy(&value, ptr, sizeof(Word));
-        ptr += sizeof(Word);
-
-        xmap_set(&vm->memory, key, value);
-        free(key); // xmap_set strdups so original key can be freed
-    }
-
     uint32_t fn_count;
     memcpy(&fn_count, ptr, sizeof(uint32_t));
     ptr += sizeof(uint32_t);
@@ -372,14 +342,9 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
             return vm->status;
         }
         xvec_init(&fn->instructions, 0);
-        xvec_init(&fn->labels, 0);
 
         uint32_t inst_count;
         memcpy(&inst_count, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
-
-        uint32_t label_count;
-        memcpy(&label_count, ptr, sizeof(uint32_t));
         ptr += sizeof(uint32_t);
 
         for (uint32_t j = 0; j < inst_count; j++) {
@@ -396,9 +361,7 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
 
             switch (inst->type) {
                 case Call:
-                case CallExtern:
-                case DerefMemory:
-                case AssignMemory: {
+                case CallExtern: {
                     uint32_t str_len;
                     memcpy(&str_len, ptr, sizeof(uint32_t));
                     ptr += sizeof(uint32_t);
@@ -426,13 +389,6 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
             }
 
             xvec_push(&fn->instructions, WORD(inst));
-        }
-
-        for (uint32_t j = 0; j < label_count; j++) {
-            Word label;
-            memcpy(&label, ptr, sizeof(Word));
-            ptr += sizeof(Word);
-            xvec_push(&fn->labels, label);
         }
 
         xmap_set(&vm->functions, fn_name, WORD(fn));
@@ -498,8 +454,12 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
     if (!vm) return P_ERR_INVALID_INDEX;
 
     switch (instruction.type) {
-        case Push:
+        case Push: // TODO: check if registername then from register else push string
             p_push(vm, instruction.arg);
+            break;
+
+        case Pop: // TODO: to register
+            p_pop(vm);
             break;
 
         case Drop:
@@ -540,20 +500,7 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
             free(frame);
             break;
 
-        case DerefMemory:
-            Word *w = xmap_get(&vm->memory, (const char *)instruction.arg.as_pointer);
-            if (!w) {
-                vm->status = P_ERR_INVALID_INDEX;
-                return vm->status;
-            }
-            p_push(vm, *w);
-            break;
-
-        case AssignMemory:
-            xmap_set(&vm->memory, (const char *)instruction.arg.as_pointer, p_pop(vm));
-            break;
-
-        case Jmp: 
+        case Jmp:
             vm->current_ip = instruction.arg.as_int;
             break;
 

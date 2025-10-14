@@ -83,7 +83,7 @@ main {
 }
 ```
 
-## Philosophy
+## Philosophy - i think its to bad so some features i wanna builtin
 
 **Minimal core. Powerful ecosystem.**
 

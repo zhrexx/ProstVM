@@ -1,3 +1,4 @@
+// TODO: Pop
 #define PROST_IMPLEMENTATION
 #include <ctype.h>
 #include <stdio.h>
@@ -253,23 +254,6 @@ static bool parser_match(ParserState *p, TokenKind kind) {
     return false;
 }
 
-static void parse_mem_decl(ParserState *p) {
-    parser_expect(p, TOK_IDENT);
-    parser_expect(p, TOK_LBRACE);
-
-    while (!parser_check(p, TOK_RBRACE) && !parser_check(p, TOK_EOF)) {
-        Token name = parser_expect(p, TOK_IDENT);
-        parser_expect(p, TOK_COLON);
-        Token value = parser_expect(p, TOK_NUM);
-
-        Word w = WORD(atoll(value.lexeme));
-        char *name_copy = strdup(name.lexeme);
-        xmap_set(&p->vm->memory, name_copy, w);
-    }
-
-    parser_expect(p, TOK_RBRACE);
-}
-
 static Instruction *make_inst(InstructionType type, Word arg) {
     Instruction *inst = malloc(sizeof(Instruction));
     inst->type = type;
@@ -292,12 +276,10 @@ static XVec parse_func_body(ParserState *p) {
                 Instruction *inst = make_inst(Push, word_uint64((uint64_t)atoll(arg.lexeme)));
                 xvec_push(&instructions, WORD(inst));
             } else if (arg.kind == TOK_STR) {
-                Instruction *inst = make_inst(Push, word_string(strdup(arg.lexeme)));
+                Instruction *inst = make_inst(Push, word_string(arg.lexeme));
                 xvec_push(&instructions, WORD(inst));
-            } else if (arg.kind == TOK_IDENT && strcmp(arg.lexeme, "mem") == 0) {
-                parser_expect(p, TOK_DOT);
-                Token name = parser_expect(p, TOK_IDENT);
-                Instruction *inst = make_inst(DerefMemory, WORD(strdup(name.lexeme)));
+            } else if (arg.kind == TOK_IDENT) {
+                Instruction *inst = make_inst(Push, word_string(arg.lexeme));
                 xvec_push(&instructions, WORD(inst));
             }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "drop") == 0) {
@@ -331,35 +313,6 @@ static XVec parse_func_body(ParserState *p) {
             Token target = parser_expect(p, TOK_NUM);
             Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
             xvec_push(&instructions, WORD(inst));
-        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "mem") == 0) {
-            parser_advance(p);
-            parser_expect(p, TOK_DOT);
-            Token name = parser_expect(p, TOK_IDENT);
-            parser_expect(p, TOK_EQ);
-
-            if (parser_check(p, TOK_NUM)) {
-                Token val = parser_advance(p);
-                Instruction *push_inst = make_inst(Push, WORD((void*)(intptr_t)atoi(val.lexeme)));
-                xvec_push(&instructions, WORD(push_inst));
-                Instruction *assign_inst = make_inst(AssignMemory, WORD(strdup(name.lexeme)));
-                xvec_push(&instructions, WORD(assign_inst));
-            } else if (parser_check(p, TOK_STAR)) {
-                parser_advance(p);
-                parser_expect(p, TOK_IDENT);
-                parser_expect(p, TOK_DOT);
-                Token mem_name = parser_expect(p, TOK_IDENT);
-                Instruction *deref_inst = make_inst(DerefMemory, WORD(strdup(mem_name.lexeme)));
-                xvec_push(&instructions, WORD(deref_inst));
-                Instruction *assign_inst = make_inst(AssignMemory, WORD(strdup(name.lexeme)));
-                xvec_push(&instructions, WORD(assign_inst));
-            }
-        } else if (tok.kind == TOK_STAR) {
-            parser_advance(p);
-            parser_expect(p, TOK_IDENT);
-            parser_expect(p, TOK_DOT);
-            Token name = parser_expect(p, TOK_IDENT);
-            Instruction *inst = make_inst(DerefMemory, WORD(strdup(name.lexeme)));
-            xvec_push(&instructions, WORD(inst));
         } else {
             parser_advance(p);
         }
@@ -378,7 +331,6 @@ static void parse_func_decl(ParserState *p) {
 
     Function *fn = malloc(sizeof(Function));
     fn->instructions = instructions;
-    xvec_init(&fn->labels, 0);
 
     char *name_copy = strdup(name.lexeme);
     xmap_set(&p->vm->functions, name_copy, WORD(fn));
@@ -387,10 +339,7 @@ static void parse_func_decl(ParserState *p) {
 static void parse_toplevel(ParserState *p) {
     while (!parser_check(p, TOK_EOF)) {
         Token tok = parser_peek(p);
-
-        if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "mem") == 0) {
-            parse_mem_decl(p);
-        } else if (tok.kind == TOK_IDENT) {
+        if (tok.kind == TOK_IDENT) {
             parse_func_decl(p);
         } else {
             parser_advance(p);
