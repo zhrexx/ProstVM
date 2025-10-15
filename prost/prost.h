@@ -1,4 +1,3 @@
-
 #ifndef PROST_H
 #define PROST_H
 
@@ -17,27 +16,11 @@
 #include "dependencies/bb.h"
 
 #define P_REGISTERS_COUNT 32
+#define CALL_FRAME_POOL_SIZE 256
 
-// TODO: maybe add load for registers
 typedef enum {
-    Push,
-    Pop, // stack -> register
-    Drop, // stack -> void
-    Halt,
-    Call,
-    CallExtern,
-    Return,
-    Jmp,
-    JmpIf,
-    Dup,
-    Swap,
-    Over,
-    Eq,   // equality check (push 1 or 0)
-    Neq,  // not equal
-    Lt,   // less than
-    Lte,  // less than or equal
-    Gt,   // greater than
-    Gte,  // greater than or equal
+    Push, Pop, Drop, Halt, Call, CallExtern, Return, Jmp, JmpIf,
+    Dup, Swap, Over, Eq, Neq, Lt, Lte, Gt, Gte, INSTRUCTION_COUNT
 } InstructionType;
 
 typedef struct {
@@ -45,8 +28,6 @@ typedef struct {
     Word arg;
 } Instruction;
 
-
-// NOTE: its not a register in common sense in Prost its just for simplifying access of important values
 typedef struct {
     const char *name;
     Word value;
@@ -64,70 +45,282 @@ typedef enum {
     P_ERR_GENERAL_VM_ERROR,
 } ProstStatus;
 
-/**
- * ProstVM - Virtual machine state
- *
- * Note: status field enables a cleaner API for operations like p_pop(),
- * allowing them to return the value directly while still reporting errors.
- */
-typedef struct ProstVM {
-    ProstRegister registers[P_REGISTERS_COUNT];
-
-    XVec stack;                 // Word
-    XVec call_stack;            // CallFrame*
-
-    XMap functions;             // XEntry(name, Function*)
-    XMap external_functions;    // XEntry(name, p_external_function)
-    ProstStatus status;         // Status of latest operation (see above)
-
-    bool running;
-    int exit_code;              // Exit code of the program
-
-    // CEC (Current Execution Context)
-    const char *current_function;
-    size_t current_ip;
-} ProstVM;
-
-typedef struct {
-    XVec instructions;
-} Function;
-
 typedef struct {
     const char *function_name;
+    void *function_ptr;
     size_t return_ip;
 } CallFrame;
 
+typedef struct {
+    Instruction *data;
+    size_t count;
+    size_t capacity;
+} InstructionArray;
+
+typedef struct {
+    InstructionArray instructions;
+} Function;
+
+typedef struct ProstVM ProstVM;
 typedef void (*p_external_function)(ProstVM *vm);
+typedef ProstStatus (*InstructionHandler)(ProstVM *vm, Instruction *inst);
+
+struct ProstVM {
+    ProstRegister registers[P_REGISTERS_COUNT];
+    XVec stack;
+    XVec call_stack;
+    XMap functions;
+    XMap external_functions;
+    ProstStatus status;
+    bool running;
+    int exit_code;
+    const char *current_function;
+    Function *current_function_ptr;
+    size_t current_ip;
+    InstructionHandler jump_table[INSTRUCTION_COUNT];
+    CallFrame *frame_pool;
+    size_t frame_pool_index;
+};
 
 ProstVM *p_init();
 void p_free(ProstVM *vm);
-
 ProstStatus p_load_library(ProstVM *vm, const char *path);
 ProstStatus p_register_external(ProstVM *vm, const char *name, p_external_function fn);
-
 ByteBuf p_to_bytecode(ProstVM *vm);
 ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode);
+ProstStatus p_call(ProstVM *vm, const char *name);
+ProstStatus p_call_extern(ProstVM *vm, const char *name);
+ProstStatus p_execute_instruction(ProstVM *vm, Instruction *instruction);
+ProstStatus p_run(ProstVM *vm);
 
-ProstStatus p_call(ProstVM *vm, const char *name);                          // call a function
-ProstStatus p_call_extern(ProstVM *vm, const char *name);                   // call a external function
-ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction);    // execute a instruction
-ProstStatus p_run(ProstVM *vm);                                             // runs __entry
+static inline Word p_pop(ProstVM *vm);
+static inline void p_push(ProstVM *vm, Word w);
+static inline Word p_peek(ProstVM *vm);
+Word p_expect(ProstVM *vm, WordType t);
+void p_throw_warning(ProstVM *vm, const char *msg, ...);
 
-Word p_pop(ProstVM *vm);                                                    // Pops a value from the stack (sets vm->status)
-void p_push(ProstVM *vm, Word w);                                           // Pushes a value onto the stack
-Word p_peek(ProstVM *vm);                                                   // Peeks at the top value of the stack (sets vm->status)
-Word p_expect(ProstVM *vm, WordType t);                                     // Pops and type-checks the top value of the stack
-
-void p_throw_warning(ProstVM *vm, const char *msg, ...);                    // Throws a warning
-
-// Adapted from Sean Barrett's single-header library pattern
-// Define PROST_IMPLEMENTATION in one source file before including prost.h
-// to compile the implementation once, avoiding multiple definition errors.
 #ifdef PROST_IMPLEMENTATION
 
-char *format(char *fmt, ...) { va_list args; va_start(args, fmt); int len = vsnprintf(NULL, 0, fmt, args); va_end(args); char *str = malloc(len + 1); va_start(args, fmt); vsprintf(str, fmt, args); va_end(args); return str; }
+char *format(char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int len = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+    char *str = malloc(len + 1);
+    va_start(args, fmt);
+    vsprintf(str, fmt, args);
+    va_end(args);
+    return str;
+}
 
-// SECTION INIT-DEINIT
+static inline Word p_pop(ProstVM *vm) {
+    if (xvec_empty(&vm->stack)) {
+        vm->status = P_ERR_STACK_UNDERFLOW;
+        return WORD(NULL);
+    }
+    vm->status = P_OK;
+    return xvec_pop(&vm->stack);
+}
+
+static inline void p_push(ProstVM *vm, Word w) {
+    xvec_push(&vm->stack, w);
+}
+
+static inline Word p_peek(ProstVM *vm) {
+    if (xvec_empty(&vm->stack)) {
+        vm->status = P_ERR_STACK_UNDERFLOW;
+        return WORD(NULL);
+    }
+    Word *top = xvec_get(&vm->stack, xvec_len(&vm->stack) - 1);
+    return *top;
+}
+
+static ProstStatus handle_push(ProstVM *vm, Instruction *inst) {
+    if (inst->arg.type == WPOINTER && word_owns_memory(&inst->arg)) {
+        for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+            if (strcmp(vm->registers[i].name, (const char *)inst->arg.as_pointer) == 0) {
+                p_push(vm, vm->registers[i].value);
+                return P_OK;
+            }
+        }
+    }
+    p_push(vm, inst->arg);
+    return P_OK;
+}
+
+static ProstStatus handle_pop(ProstVM *vm, Instruction *inst) {
+    if (inst->arg.type == WPOINTER && word_owns_memory(&inst->arg)) {
+        for (int i = 0; i < P_REGISTERS_COUNT; i++) {
+            if (strcmp(vm->registers[i].name, (const char *)inst->arg.as_pointer) == 0) {
+                Word w = p_pop(vm);
+                vm->registers[i].value = w;
+                return vm->status;
+            }
+        }
+    }
+    return P_ERR_INVALID_INDEX;
+}
+
+static ProstStatus handle_drop(ProstVM *vm, Instruction *inst) {
+    p_pop(vm);
+    return vm->status;
+}
+
+static ProstStatus handle_halt(ProstVM *vm, Instruction *inst) {
+    vm->running = false;
+    return P_OK;
+}
+
+static ProstStatus handle_call(ProstVM *vm, Instruction *inst) {
+    const char *fn_name = (const char *)inst->arg.as_pointer;
+    return p_call(vm, fn_name);
+}
+
+static ProstStatus handle_call_extern(ProstVM *vm, Instruction *inst) {
+    const char *fn_name = (const char *)inst->arg.as_pointer;
+    return p_call_extern(vm, fn_name);
+}
+
+static ProstStatus handle_return(ProstVM *vm, Instruction *inst) {
+    if (xvec_empty(&vm->call_stack)) {
+        return P_ERR_CALL_STACK_UNDERFLOW;
+    }
+    Word frame_word = xvec_pop(&vm->call_stack);
+    CallFrame *frame = (CallFrame *)frame_word.as_pointer;
+    vm->current_function = frame->function_name;
+    vm->current_function_ptr = (Function *)frame->function_ptr;
+    vm->current_ip = frame->return_ip;
+    if (vm->frame_pool_index > 0) {
+        vm->frame_pool_index--;
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_jmp(ProstVM *vm, Instruction *inst) {
+    vm->current_ip = inst->arg.as_int;
+    return P_OK;
+}
+
+static ProstStatus handle_jmpif(ProstVM *vm, Instruction *inst) {
+    if (p_expect(vm, WINT).as_int == 1) {
+        vm->current_ip = inst->arg.as_int;
+    }
+    return vm->status;
+}
+
+static ProstStatus handle_eq(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_peek(vm);
+    Word w2 = p_peek(vm);
+    if (w1.type == WPOINTER && word_is_string(&w1) && w2.type == WPOINTER && word_is_string(&w2)) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) == 0 ? 1 : 0));
+    } else if (w1.type == WPOINTER && w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_pointer == w2.as_pointer ? 1 : 0));
+    } else if (w1.type == w2.type && w1.type == WINT) {
+        p_push(vm, WORD(w1.as_int == w2.as_int ? 1 : 0));
+    } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+        p_push(vm, WORD(w1.as_float == w2.as_float ? 1 : 0));
+    } else {
+        p_push(vm, WORD(0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_neq(ProstVM *vm, Instruction *inst) {
+    Word w = p_peek(vm);
+    if (w.type == WINT) {
+        p_push(vm, WORD(w.as_int != 0 ? 1 : 0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_lt(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+    if (w1.type == WPOINTER && word_is_string(&w1) && w2.type == WPOINTER && word_is_string(&w2)) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) < 0 ? 1 : 0));
+    } else if (w1.type == WPOINTER && w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_pointer < w2.as_pointer ? 1 : 0));
+    } else if (w1.type == WINT && w2.type == WINT) {
+        p_push(vm, WORD(w1.as_int < w2.as_int ? 1 : 0));
+    } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+        p_push(vm, WORD(w1.as_float < w2.as_float ? 1 : 0));
+    } else {
+        p_push(vm, WORD(0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_lte(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+    if (w1.type == WPOINTER && word_is_string(&w1) && w2.type == WPOINTER && word_is_string(&w2)) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) <= 0 ? 1 : 0));
+    } else if (w1.type == WPOINTER && w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_pointer <= w2.as_pointer ? 1 : 0));
+    } else if (w1.type == WINT && w2.type == WINT) {
+        p_push(vm, WORD(w1.as_int <= w2.as_int ? 1 : 0));
+    } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+        p_push(vm, WORD(w1.as_float <= w2.as_float ? 1 : 0));
+    } else {
+        p_push(vm, WORD(0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_gt(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+    if (w1.type == WPOINTER && word_is_string(&w1) && w2.type == WPOINTER && word_is_string(&w2)) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) > 0 ? 1 : 0));
+    } else if (w1.type == WPOINTER && w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_pointer > w2.as_pointer ? 1 : 0));
+    } else if (w1.type == WINT && w2.type == WINT) {
+        p_push(vm, WORD(w1.as_int > w2.as_int ? 1 : 0));
+    } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+        p_push(vm, WORD(w1.as_float > w2.as_float ? 1 : 0));
+    } else {
+        p_push(vm, WORD(0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_gte(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+    if (w1.type == WPOINTER && word_is_string(&w1) && w2.type == WPOINTER && word_is_string(&w2)) {
+        p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) >= 0 ? 1 : 0));
+    } else if (w1.type == WPOINTER && w1.type == w2.type) {
+        p_push(vm, WORD(w1.as_pointer >= w2.as_pointer ? 1 : 0));
+    } else if (w1.type == WINT && w2.type == WINT) {
+        p_push(vm, WORD(w1.as_int >= w2.as_int ? 1 : 0));
+    } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+        p_push(vm, WORD(w1.as_float >= w2.as_float ? 1 : 0));
+    } else {
+        p_push(vm, WORD(0));
+    }
+    return P_OK;
+}
+
+static ProstStatus handle_dup(ProstVM *vm, Instruction *inst) {
+    Word w = p_peek(vm);
+    p_push(vm, w);
+    return P_OK;
+}
+
+static ProstStatus handle_swap(ProstVM *vm, Instruction *inst) {
+    Word w1 = p_pop(vm);
+    Word w2 = p_pop(vm);
+    p_push(vm, w1);
+    p_push(vm, w2);
+    return P_OK;
+}
+
+static ProstStatus handle_over(ProstVM *vm, Instruction *inst) {
+    Word *w = xvec_get(&vm->stack, vm->stack.size - 2);
+    p_push(vm, *w);
+    return P_OK;
+}
+
 ProstVM *p_init() {
     ProstVM *vm = (ProstVM *)malloc(sizeof(ProstVM));
     if (!vm) return NULL;
@@ -141,7 +334,30 @@ ProstVM *p_init() {
     vm->running = false;
     vm->exit_code = 0;
     vm->current_function = NULL;
+    vm->current_function_ptr = NULL;
     vm->current_ip = 0;
+
+    vm->frame_pool = (CallFrame *)malloc(sizeof(CallFrame) * CALL_FRAME_POOL_SIZE);
+    vm->frame_pool_index = 0;
+
+    vm->jump_table[Push] = handle_push;
+    vm->jump_table[Pop] = handle_pop;
+    vm->jump_table[Drop] = handle_drop;
+    vm->jump_table[Halt] = handle_halt;
+    vm->jump_table[Call] = handle_call;
+    vm->jump_table[CallExtern] = handle_call_extern;
+    vm->jump_table[Return] = handle_return;
+    vm->jump_table[Jmp] = handle_jmp;
+    vm->jump_table[JmpIf] = handle_jmpif;
+    vm->jump_table[Eq] = handle_eq;
+    vm->jump_table[Neq] = handle_neq;
+    vm->jump_table[Lt] = handle_lt;
+    vm->jump_table[Lte] = handle_lte;
+    vm->jump_table[Gt] = handle_gt;
+    vm->jump_table[Gte] = handle_gte;
+    vm->jump_table[Dup] = handle_dup;
+    vm->jump_table[Swap] = handle_swap;
+    vm->jump_table[Over] = handle_over;
 
     for (int i = 0; i < P_REGISTERS_COUNT; i++) {
         ProstRegister *r = &vm->registers[i];
@@ -156,20 +372,15 @@ void p_free(ProstVM *vm) {
     if (!vm) return;
 
     xvec_free(&vm->stack);
-
-    for (size_t i = 0; i < vm->call_stack.size; i++) {
-        Word *frame_word = xvec_get(&vm->call_stack, i);
-        if (frame_word && frame_word->as_pointer) {
-            free(frame_word->as_pointer);
-        }
-    }
     xvec_free(&vm->call_stack);
 
     for (size_t i = 0; i < vm->functions.size; i++) {
         XEntry iter = vm->functions.entries[i];
         Function *fn = (Function *)iter.value.as_pointer;
         if (fn) {
-            xvec_free(&fn->instructions);
+            if (fn->instructions.data) {
+                free(fn->instructions.data);
+            }
             free(fn);
         }
     }
@@ -183,11 +394,10 @@ void p_free(ProstVM *vm) {
         r->value = WORD(0);
     }
 
+    free(vm->frame_pool);
     free(vm);
 }
-// END SECTION INIT-DEINIT
 
-// SECTION EXTERN
 ProstStatus p_load_library(ProstVM *vm, const char *path) {
     if (!vm || !path) {
         vm->status = P_ERR_INVALID_INDEX;
@@ -249,18 +459,13 @@ ProstStatus p_register_external(ProstVM *vm, const char *name, p_external_functi
     vm->status = P_OK;
     return vm->status;
 }
-// END SECTION EXTERN
 
-// SECTION BYTECODE
 ByteBuf p_to_bytecode(ProstVM *vm) {
     ByteBuf bb;
     bb_init(&bb, 1024);
 
-    bb_append(&bb, "PROST", 6);
-    bb_push(&bb, 1);
-
-    uint32_t fn_count = (uint32_t)vm->functions.size;
-    bb_append(&bb, &fn_count, sizeof(uint32_t));
+    uint16_t fn_count = (uint16_t)vm->functions.size;
+    bb_append(&bb, &fn_count, sizeof(uint16_t));
 
     for (size_t i = 0; i < vm->functions.size; i++) {
         XEntry entry = vm->functions.entries[i];
@@ -269,41 +474,31 @@ ByteBuf p_to_bytecode(ProstVM *vm) {
 
         if (!fn) continue;
 
-        uint32_t name_len = (uint32_t)strlen(fn_name);
-        bb_append(&bb, &name_len, sizeof(uint32_t));
+        uint16_t name_len = (uint16_t)strlen(fn_name);
+        bb_append(&bb, &name_len, sizeof(uint16_t));
         bb_append(&bb, fn_name, name_len);
 
-        uint32_t inst_count = (uint32_t)xvec_len(&fn->instructions);
-        bb_append(&bb, &inst_count, sizeof(uint32_t));
+        uint16_t inst_count = (uint16_t)fn->instructions.count;
+        bb_append(&bb, &inst_count, sizeof(uint16_t));
 
         for (size_t j = 0; j < inst_count; j++) {
-            Word *inst_word = xvec_get(&fn->instructions, j);
-            if (!inst_word) continue;
-
-            Instruction *inst = (Instruction *)inst_word->as_pointer;
+            Instruction *inst = &fn->instructions.data[j];
 
             uint8_t inst_type = (uint8_t)inst->type;
             bb_append(&bb, &inst_type, sizeof(uint8_t));
 
-            switch (inst->type) {
-                case Call:
-                case CallExtern: {
-                    const char *str = (const char *)inst->arg.as_pointer;
-                    uint32_t str_len = str ? (uint32_t)strlen(str) : 0;
-                    bb_append(&bb, &str_len, sizeof(uint32_t));
-                    if (str_len > 0) {
-                        bb_append(&bb, str, str_len);
-                    }
-                    break;
+            if (inst->type == Call || inst->type == CallExtern) {
+                const char *str = (const char *)inst->arg.as_pointer;
+                uint16_t str_len = str ? (uint16_t)strlen(str) : 0;
+                bb_append(&bb, &str_len, sizeof(uint16_t));
+                if (str_len > 0) {
+                    bb_append(&bb, str, str_len);
                 }
-                default:
-                    bb_append(&bb, &inst->arg, sizeof(Word));
-                    break;
+            } else {
+                bb_append(&bb, &inst->arg, sizeof(Word));
             }
         }
     }
-
-    bb_push(&bb, 0);
 
     return bb;
 }
@@ -316,26 +511,14 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
 
     const uint8_t *ptr = (const uint8_t *)bytecode;
 
-    if (memcmp(ptr, "PROST", 6) != 0) {
-        vm->status = P_ERR_INVALID_BYTECODE;
-        return vm->status;
-    }
-    ptr += 6;
+    uint16_t fn_count;
+    memcpy(&fn_count, ptr, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
 
-    uint8_t version = *ptr++;
-    if (version != 1) {
-        vm->status = P_ERR_INVALID_BYTECODE;
-        return vm->status;
-    }
-
-    uint32_t fn_count;
-    memcpy(&fn_count, ptr, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-
-    for (uint32_t i = 0; i < fn_count; i++) {
-        uint32_t name_len;
-        memcpy(&name_len, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
+    for (uint16_t i = 0; i < fn_count; i++) {
+        uint16_t name_len;
+        memcpy(&name_len, ptr, sizeof(uint16_t));
+        ptr += sizeof(uint16_t);
 
         char *fn_name = (char *)malloc(name_len + 1);
         if (!fn_name) {
@@ -352,54 +535,45 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
             vm->status = P_ERR_INVALID_VM_STATE;
             return vm->status;
         }
-        xvec_init(&fn->instructions, 0);
 
-        uint32_t inst_count;
-        memcpy(&inst_count, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
+        uint16_t inst_count;
+        memcpy(&inst_count, ptr, sizeof(uint16_t));
+        ptr += sizeof(uint16_t);
 
-        for (uint32_t j = 0; j < inst_count; j++) {
-            Instruction *inst = (Instruction *)malloc(sizeof(Instruction));
-            if (!inst) {
-                vm->status = P_ERR_INVALID_VM_STATE;
-                return vm->status;
-            }
+        fn->instructions.data = (Instruction *)malloc(sizeof(Instruction) * inst_count);
+        fn->instructions.count = inst_count;
+        fn->instructions.capacity = inst_count;
+
+        for (uint16_t j = 0; j < inst_count; j++) {
+            Instruction *inst = &fn->instructions.data[j];
 
             uint8_t inst_type;
             memcpy(&inst_type, ptr, sizeof(uint8_t));
             ptr += sizeof(uint8_t);
             inst->type = (InstructionType)inst_type;
 
-            switch (inst->type) {
-                case Call:
-                case CallExtern: {
-                    uint32_t str_len;
-                    memcpy(&str_len, ptr, sizeof(uint32_t));
-                    ptr += sizeof(uint32_t);
+            if (inst->type == Call || inst->type == CallExtern) {
+                uint16_t str_len;
+                memcpy(&str_len, ptr, sizeof(uint16_t));
+                ptr += sizeof(uint16_t);
 
-                    if (str_len > 0) {
-                        char *str = (char *)malloc(str_len + 1);
-                        if (!str) {
-                            free(inst);
-                            vm->status = P_ERR_INVALID_VM_STATE;
-                            return vm->status;
-                        }
-                        memcpy(str, ptr, str_len);
-                        str[str_len] = '\0';
-                        ptr += str_len;
-                        inst->arg = WORD(str);
-                    } else {
-                        inst->arg = WORD(NULL);
+                if (str_len > 0) {
+                    char *str = (char *)malloc(str_len + 1);
+                    if (!str) {
+                        vm->status = P_ERR_INVALID_VM_STATE;
+                        return vm->status;
                     }
-                    break;
+                    memcpy(str, ptr, str_len);
+                    str[str_len] = '\0';
+                    ptr += str_len;
+                    inst->arg = WORD(str);
+                } else {
+                    inst->arg = WORD(NULL);
                 }
-                default:
-                    memcpy(&inst->arg, ptr, sizeof(Word));
-                    ptr += sizeof(Word);
-                    break;
+            } else {
+                memcpy(&inst->arg, ptr, sizeof(Word));
+                ptr += sizeof(Word);
             }
-
-            xvec_push(&fn->instructions, WORD(inst));
         }
 
         xmap_set(&vm->functions, fn_name, WORD(fn));
@@ -408,9 +582,7 @@ ProstStatus p_from_bytecode(ProstVM *vm, const char *bytecode) {
     vm->status = P_OK;
     return vm->status;
 }
-// END SECTION BYTECODE
 
-// SECTION CALL
 ProstStatus p_call(ProstVM *vm, const char *name) {
     if (!vm || !name) {
         vm->status = P_ERR_INVALID_INDEX;
@@ -423,17 +595,24 @@ ProstStatus p_call(ProstVM *vm, const char *name) {
         return vm->status;
     }
 
-    CallFrame *frame = (CallFrame *)malloc(sizeof(CallFrame));
-    if (!frame) {
-        vm->status = P_ERR_INVALID_VM_STATE;
-        return vm->status;
+    CallFrame *frame;
+    if (vm->frame_pool_index < CALL_FRAME_POOL_SIZE) {
+        frame = &vm->frame_pool[vm->frame_pool_index++];
+    } else {
+        frame = (CallFrame *)malloc(sizeof(CallFrame));
+        if (!frame) {
+            vm->status = P_ERR_INVALID_VM_STATE;
+            return vm->status;
+        }
     }
 
     frame->function_name = vm->current_function;
+    frame->function_ptr = vm->current_function_ptr;
     frame->return_ip = vm->current_ip;
     xvec_push(&vm->call_stack, WORD(frame));
 
     vm->current_function = name;
+    vm->current_function_ptr = (Function *)fn_word->as_pointer;
     vm->current_ip = 0;
 
     vm->status = P_OK;
@@ -458,210 +637,16 @@ ProstStatus p_call_extern(ProstVM *vm, const char *name) {
     vm->status = P_OK;
     return vm->status;
 }
-// END SECTION CALL
 
-// SECTION RUN
-ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
+ProstStatus p_execute_instruction(ProstVM *vm, Instruction *instruction) {
     if (!vm) return P_ERR_INVALID_INDEX;
 
-    switch (instruction.type) {
-        case Push: // TODO: check if registername then from register else push string
-            if (instruction.arg.type == WPOINTER && word_owns_memory(&instruction.arg)) {
-                for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-                    if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
-                        p_push(vm, vm->registers[i].value);
-                        return vm->status;
-                    }
-                }
-            }
-
-            p_push(vm, instruction.arg);
-            break;
-
-        case Pop: // TODO: to register
-            if (instruction.arg.type == WPOINTER && word_owns_memory(&instruction.arg)) {
-                for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-                    if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
-                        Word w = p_pop(vm);
-                        vm->registers[i].value = w;
-                        return vm->status;
-                    }
-                }
-            }
-
-            vm->status = P_ERR_INVALID_INDEX; // TODO: maybe seperate error (like P_ERR_INVALID_POP_CALL)
-            break;
-
-        case Drop:
-            p_pop(vm);
-            if (vm->status != P_OK) return vm->status;
-            break;
-
-        case Halt:
-            vm->running = false;
-            break;
-
-        case Call: {
-            const char *fn_name = (const char *)instruction.arg.as_pointer;
-            ProstStatus status = p_call(vm, fn_name);
-            if (status != P_OK) return status;
-            break;
-        }
-
-        case CallExtern: {
-            const char *fn_name = (const char *)instruction.arg.as_pointer;
-            ProstStatus status = p_call_extern(vm, fn_name);
-            if (status != P_OK) return status;
-            break;
-        }
-
-        case Return:
-            if (xvec_empty(&vm->call_stack)) {
-                vm->status = P_ERR_CALL_STACK_UNDERFLOW;
-                return vm->status;
-            }
-
-            Word frame_word = xvec_pop(&vm->call_stack);
-            CallFrame *frame = (CallFrame *)frame_word.as_pointer;
-
-            vm->current_function = frame->function_name;
-            vm->current_ip = frame->return_ip;
-
-            free(frame);
-            break;
-
-        case Jmp:
-            vm->current_ip = instruction.arg.as_int;
-            break;
-
-        case JmpIf:
-            if (p_expect(vm, WINT).as_int == 1) {
-                vm->current_ip = instruction.arg.as_int;
-            }
-            break;
-
-        case Eq: {
-            Word w1 = p_peek(vm);
-            Word w2 = p_peek(vm);
-
-            if (w1.type == WPOINTER && word_is_string(&w1)
-                && w2.type == WPOINTER && word_is_string(&w2)) {
-                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) == 0 ? 1 : 0));
-            } else if (w1.type == WPOINTER && w1.type == w2.type) {
-                p_push(vm, WORD(w1.as_pointer == w2.as_pointer ? 1 : 0));
-            } else if (w1.type == w2.type && w1.type == WINT) {
-                p_push(vm, WORD(w1.as_int == w2.as_int ? 1 : 0));
-            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
-                p_push(vm, WORD(w1.as_float == w2.as_float ? 1 : 0));
-            } else {
-                p_push(vm, WORD(0));
-            }
-        } break;
-
-        case Neq: {
-            Word w = p_peek(vm);
-            if (w.type == WINT) {
-                p_push(vm, WORD(w.as_int != 0 ? 1 : 0));
-            }
-        } break;
-
-        case Lt: {
-            Word w1 = p_pop(vm);
-            Word w2 = p_pop(vm);
-
-            if (w1.type == WPOINTER && word_is_string(&w1)
-                && w2.type == WPOINTER && word_is_string(&w2)) {
-                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) < 0 ? 1 : 0));
-            } else if (w1.type == WPOINTER && w1.type == w2.type) {
-                p_push(vm, WORD(w1.as_pointer < w2.as_pointer ? 1 : 0));
-            } else if (w1.type == WINT && w2.type == WINT) {
-                p_push(vm, WORD(w1.as_int < w2.as_int ? 1 : 0));
-            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
-                p_push(vm, WORD(w1.as_float < w2.as_float ? 1 : 0));
-            } else {
-                p_push(vm, WORD(0));
-            }
-        } break;
-
-        case Lte: {
-            Word w1 = p_pop(vm);
-            Word w2 = p_pop(vm);
-
-            if (w1.type == WPOINTER && word_is_string(&w1)
-                && w2.type == WPOINTER && word_is_string(&w2)) {
-                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) <= 0 ? 1 : 0));
-            } else if (w1.type == WPOINTER && w1.type == w2.type) {
-                p_push(vm, WORD(w1.as_pointer <= w2.as_pointer ? 1 : 0));
-            } else if (w1.type == WINT && w2.type == WINT) {
-                p_push(vm, WORD(w1.as_int <= w2.as_int ? 1 : 0));
-            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
-                p_push(vm, WORD(w1.as_float <= w2.as_float ? 1 : 0));
-            } else {
-                p_push(vm, WORD(0));
-            }
-        } break;
-            
-        case Gt: {
-            Word w1 = p_pop(vm);
-            Word w2 = p_pop(vm);
-
-            if (w1.type == WPOINTER && word_is_string(&w1)
-                && w2.type == WPOINTER && word_is_string(&w2)) {
-                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) > 0 ? 1 : 0));
-            } else if (w1.type == WPOINTER && w1.type == w2.type) {
-                p_push(vm, WORD(w1.as_pointer > w2.as_pointer ? 1 : 0));
-            } else if (w1.type == WINT && w2.type == WINT) {
-                p_push(vm, WORD(w1.as_int > w2.as_int ? 1 : 0));
-            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
-                p_push(vm, WORD(w1.as_float > w2.as_float ? 1 : 0));
-            } else {
-                p_push(vm, WORD(0));
-            }
-        } break; 
-
-        case Gte: {
-            Word w1 = p_pop(vm);
-            Word w2 = p_pop(vm);
-
-            if (w1.type == WPOINTER && word_is_string(&w1)
-                && w2.type == WPOINTER && word_is_string(&w2)) {
-                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) >= 0 ? 1 : 0));
-            } else if (w1.type == WPOINTER && w1.type == w2.type) {
-                p_push(vm, WORD(w1.as_pointer >= w2.as_pointer ? 1 : 0));
-            } else if (w1.type == WINT && w2.type == WINT) {
-                p_push(vm, WORD(w1.as_int >= w2.as_int ? 1 : 0));
-            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
-                p_push(vm, WORD(w1.as_float >= w2.as_float ? 1 : 0));
-            } else {
-                p_push(vm, WORD(0));
-            }
-        } break;
-
-        case Dup: {
-            Word w = p_peek(vm);
-            p_push(vm, w);
-        } break;
-
-        case Swap: {
-            Word w1 = p_pop(vm); // w1, w2
-            Word w2 = p_pop(vm); // w2
-
-            p_push(vm, w1); // w1
-            p_push(vm, w2); // w2, w1
-        } break;
-
-        case Over: {
-            Word *w = xvec_get(&vm->stack, vm->stack.size - 2);
-            p_push(vm, *w);
-        } break;
-
-        default:
-            vm->status = P_ERR_INVALID_BYTECODE;
-            return vm->status;
+    if (instruction->type >= INSTRUCTION_COUNT) {
+        vm->status = P_ERR_INVALID_BYTECODE;
+        return vm->status;
     }
 
-    vm->status = P_OK;
-    return vm->status;
+    return vm->jump_table[instruction->type](vm, instruction);
 }
 
 ProstStatus p_run(ProstVM *vm) {
@@ -671,16 +656,17 @@ ProstStatus p_run(ProstVM *vm) {
     vm->current_function = "__entry";
     vm->current_ip = 0;
 
+    Word *fn_word = xmap_get(&vm->functions, "__entry");
+    if (!fn_word || fn_word->as_pointer == NULL) {
+        vm->status = P_ERR_FUNCTION_NOT_FOUND;
+        return vm->status;
+    }
+    vm->current_function_ptr = (Function *)fn_word->as_pointer;
+
     while (vm->running) {
-        Word *fn_word = xmap_get(&vm->functions, vm->current_function);
-        if (!fn_word || fn_word->as_pointer == NULL) {
-            vm->status = P_ERR_FUNCTION_NOT_FOUND;
-            return vm->status;
-        }
+        Function *fn = vm->current_function_ptr;
 
-        Function *fn = (Function *)fn_word->as_pointer;
-
-        if (vm->current_ip >= xvec_len(&fn->instructions)) {
+        if (vm->current_ip >= fn->instructions.count) {
             if (xvec_empty(&vm->call_stack)) {
                 vm->running = false;
                 break;
@@ -690,52 +676,25 @@ ProstStatus p_run(ProstVM *vm) {
             CallFrame *frame = (CallFrame *)frame_word.as_pointer;
 
             vm->current_function = frame->function_name;
+            vm->current_function_ptr = (Function *)frame->function_ptr;
             vm->current_ip = frame->return_ip;
 
-            free(frame);
+            if (vm->frame_pool_index > 0) {
+                vm->frame_pool_index--;
+            }
             continue;
         }
 
-        Word *inst_word = xvec_get(&fn->instructions, vm->current_ip);
-        if (!inst_word) {
-            vm->status = P_ERR_INVALID_INDEX;
-            return vm->status;
-        }
-
-        Instruction inst = *(Instruction *)inst_word->as_pointer;
+        Instruction *inst = &fn->instructions.data[vm->current_ip];
         vm->current_ip++;
 
-        ProstStatus status = p_execute_instruction(vm, inst);
+        ProstStatus status = vm->jump_table[inst->type](vm, inst);
         if (status != P_OK) {
             return status;
         }
     }
 
     return P_OK;
-}
-// END SECTION RUN
-
-// SECTION STACK MANIPULATION
-Word p_pop(ProstVM *vm) {
-    if (xvec_empty(&vm->stack)) {
-        vm->status = P_ERR_STACK_UNDERFLOW;
-        return WORD(NULL);
-    }
-    vm->status = P_OK;
-    return xvec_pop(&vm->stack);
-}
-
-void p_push(ProstVM *vm, Word w) {
-    xvec_push(&vm->stack, w);
-}
-
-Word p_peek(ProstVM *vm) {
-    if (xvec_empty(&vm->stack)) {
-        vm->status = P_ERR_STACK_UNDERFLOW;
-        return WORD(NULL);
-    }
-    Word *top = xvec_get(&vm->stack, xvec_len(&vm->stack) - 1);
-    return *top;
 }
 
 Word p_expect(ProstVM *vm, WordType t) {
@@ -748,7 +707,6 @@ Word p_expect(ProstVM *vm, WordType t) {
     }
     return w;
 }
-// END SECTION STACK MANIPULATION
 
 void p_throw_warning(ProstVM *vm, const char *msg, ...) {
     va_list args;
@@ -760,5 +718,4 @@ void p_throw_warning(ProstVM *vm, const char *msg, ...) {
 }
 
 #endif
-
-#endif //PROST_H
+#endif

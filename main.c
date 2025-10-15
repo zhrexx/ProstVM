@@ -9,19 +9,8 @@
 #include "prost/std.h"
 
 typedef enum {
-    TOK_NUM,
-    TOK_IDENT,
-    TOK_STR,
-    TOK_LBRACE,
-    TOK_LPAREN,
-    TOK_RBRACE,
-    TOK_RPAREN,
-    TOK_COLON,
-    TOK_DOT,
-    TOK_AT,
-    TOK_STAR,
-    TOK_EQ,
-    TOK_EOF,
+    TOK_NUM, TOK_IDENT, TOK_STR, TOK_LBRACE, TOK_LPAREN, TOK_RBRACE,
+    TOK_RPAREN, TOK_COLON, TOK_DOT, TOK_AT, TOK_STAR, TOK_EQ, TOK_EOF,
 } TokenKind;
 
 typedef struct {
@@ -163,42 +152,34 @@ static Token tok_next(Tokenizer *t) {
         tok_advance(t);
         return tok_make_token(TOK_LBRACE, NULL, start_line, start_col);
     }
-
     if (c == '}') {
         tok_advance(t);
         return tok_make_token(TOK_RBRACE, NULL, start_line, start_col);
     }
-
     if (c == '(') {
         tok_advance(t);
         return tok_make_token(TOK_LPAREN, NULL, start_line, start_col);
     }
-
     if (c == ')') {
         tok_advance(t);
         return tok_make_token(TOK_RPAREN, NULL, start_line, start_col);
     }
-
     if (c == ':') {
         tok_advance(t);
         return tok_make_token(TOK_COLON, NULL, start_line, start_col);
     }
-
     if (c == '.') {
         tok_advance(t);
         return tok_make_token(TOK_DOT, NULL, start_line, start_col);
     }
-
     if (c == '@') {
         tok_advance(t);
         return tok_make_token(TOK_AT, NULL, start_line, start_col);
     }
-
     if (c == '*') {
         tok_advance(t);
         return tok_make_token(TOK_STAR, NULL, start_line, start_col);
     }
-
     if (c == '=') {
         tok_advance(t);
         return tok_make_token(TOK_EQ, NULL, start_line, start_col);
@@ -208,9 +189,7 @@ static Token tok_next(Tokenizer *t) {
         tok_advance(t);
         size_t start = t->pos;
         while (tok_peek(t) && tok_peek(t) != '"') {
-            if (tok_peek(t) == '\\') {
-                tok_advance(t);
-            }
+            if (tok_peek(t) == '\\') tok_advance(t);
             tok_advance(t);
         }
         size_t end = t->pos;
@@ -255,7 +234,6 @@ static Token *tok_tokenize(const char *src, size_t *out_count) {
         }
 
         tokens[count++] = tok;
-
         if (tok.kind == TOK_EOF) break;
     }
 
@@ -298,16 +276,19 @@ static bool parser_match(ParserState *p, TokenKind kind) {
     return false;
 }
 
-static Instruction *make_inst(InstructionType type, Word arg) {
-    Instruction *inst = malloc(sizeof(Instruction));
-    inst->type = type;
-    inst->arg = arg;
-    return inst;
+static void inst_array_push(InstructionArray *arr, Instruction inst) {
+    if (arr->count >= arr->capacity) {
+        arr->capacity = arr->capacity == 0 ? 16 : arr->capacity * 2;
+        arr->data = realloc(arr->data, arr->capacity * sizeof(Instruction));
+    }
+    arr->data[arr->count++] = inst;
 }
 
-static XVec parse_func_body(ParserState *p) {
-    XVec instructions;
-    xvec_init(&instructions, 0);
+static InstructionArray parse_func_body(ParserState *p) {
+    InstructionArray instructions;
+    instructions.data = NULL;
+    instructions.count = 0;
+    instructions.capacity = 0;
 
     while (!parser_check(p, TOK_RBRACE) && !parser_check(p, TOK_EOF)) {
         Token tok = parser_peek(p);
@@ -316,124 +297,120 @@ static XVec parse_func_body(ParserState *p) {
             parser_advance(p);
             Token label_name = parser_expect(p, TOK_IDENT);
             parser_expect(p, TOK_COLON);
-            label_table_add(p->current_labels, label_name.lexeme, xvec_len(&instructions));
+            label_table_add(p->current_labels, label_name.lexeme, instructions.count);
             continue;
         }
 
         if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "push") == 0) {
             parser_advance(p);
             Token arg = parser_advance(p);
-
+            Instruction inst = {Push, WORD(0)};
             if (arg.kind == TOK_NUM) {
-                Instruction *inst = make_inst(Push, WORD((uint64_t)atoll(arg.lexeme)));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = WORD((uint64_t)atoll(arg.lexeme));
             } else if (arg.kind == TOK_STR) {
-                Instruction *inst = make_inst(Push, word_string(arg.lexeme));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = word_string(arg.lexeme);
             } else if (arg.kind == TOK_IDENT) {
-                Instruction *inst = make_inst(Push, word_string(arg.lexeme));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = word_string(arg.lexeme);
             }
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "pop") == 0) {
             parser_advance(p);
             Token arg = parser_advance(p);
             if (arg.kind == TOK_IDENT) {
-                Instruction *inst = make_inst(Pop, word_string(arg.lexeme));
-                xvec_push(&instructions, WORD(inst));
+                Instruction inst = {Pop, word_string(arg.lexeme)};
+                inst_array_push(&instructions, inst);
             }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "drop") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Drop, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Drop, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && (strcmp(tok.lexeme, "halt") == 0 || strcmp(tok.lexeme, "ret") == 0)) {
             parser_advance(p);
-            Instruction *inst = make_inst(Halt, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Halt, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "return") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Return, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Return, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "call") == 0) {
             parser_advance(p);
-
+            Instruction inst;
             if (parser_check(p, TOK_AT)) {
                 parser_advance(p);
                 Token name = parser_expect(p, TOK_IDENT);
-                Instruction *inst = make_inst(CallExtern, WORD(strdup(name.lexeme)));
-                xvec_push(&instructions, WORD(inst));
+                inst.type = CallExtern;
+                inst.arg = WORD(strdup(name.lexeme));
             } else {
                 Token name = parser_expect(p, TOK_IDENT);
-                Instruction *inst = make_inst(Call, WORD(strdup(name.lexeme)));
-                xvec_push(&instructions, WORD(inst));
+                inst.type = Call;
+                inst.arg = WORD(strdup(name.lexeme));
             }
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmp") == 0) {
             parser_advance(p);
             Token target = parser_advance(p);
-
+            Instruction inst = {Jmp, WORD(0)};
             if (target.kind == TOK_DOT) {
                 Token label_name = parser_expect(p, TOK_IDENT);
-                Instruction *inst = make_inst(Jmp, word_string(label_name.lexeme));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = word_string(label_name.lexeme);
             } else if (target.kind == TOK_NUM) {
-                Instruction *inst = make_inst(Jmp, WORD(atoi(target.lexeme)));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = WORD(atoi(target.lexeme));
             }
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmpif") == 0) {
             parser_advance(p);
             Token target = parser_advance(p);
-
+            Instruction inst = {JmpIf, WORD(0)};
             if (target.kind == TOK_DOT) {
                 Token label_name = parser_expect(p, TOK_IDENT);
-                Instruction *inst = make_inst(JmpIf, word_string(label_name.lexeme));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = word_string(label_name.lexeme);
             } else if (target.kind == TOK_NUM) {
-                Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
-                xvec_push(&instructions, WORD(inst));
+                inst.arg = WORD(atoi(target.lexeme));
             }
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "dup") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Dup, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Dup, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "swap") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Swap, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Swap, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "over") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Over, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Over, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "eq") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Eq, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Eq, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "neq") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Neq, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Neq, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "lt") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Lt, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Lt, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "lte") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Lte, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Lte, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "gt") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Gt, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Gt, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "gte") == 0) {
             parser_advance(p);
-            Instruction *inst = make_inst(Gte, WORD(NULL));
-            xvec_push(&instructions, WORD(inst));
+            Instruction inst = {Gte, WORD(NULL)};
+            inst_array_push(&instructions, inst);
         } else {
             parser_advance(p);
         }
     }
 
-    for (size_t i = 0; i < xvec_len(&instructions); i++) {
-        Instruction *inst = (Instruction*)xvec_get(&instructions, i)->as_pointer;
-
+    for (size_t i = 0; i < instructions.count; i++) {
+        Instruction *inst = &instructions.data[i];
         if ((inst->type == Jmp || inst->type == JmpIf) && inst->arg.as_pointer != NULL) {
             char *label_name = (char*)inst->arg.as_pointer;
             if (isalpha(label_name[0]) || label_name[0] == '_') {
@@ -460,7 +437,7 @@ static void parse_func_decl(ParserState *p) {
     label_table_init(&labels);
     p->current_labels = &labels;
 
-    XVec instructions = parse_func_body(p);
+    InstructionArray instructions = parse_func_body(p);
 
     parser_expect(p, TOK_RBRACE);
 

@@ -1,19 +1,20 @@
-a {
-push 2
-    call b
-    return
-}
-b {
-push 5
-    call c
-    return
-}
-c {
-push 10
-return
-}
-
 __entry {
+    push 0
+
+    .loop:
+    dup
+    call @print
+
     push 1
-    call a
+    call @add
+
+    dup
+    push 10000
+    lt
+    call @neg
+
+    jmpif .loop
+
+    drop
+    halt
 }
