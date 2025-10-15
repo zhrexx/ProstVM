@@ -16,7 +16,7 @@ void print(ProstVM *vm) {
             return;
         }
     }
-
+    fflush(stdout);
 }
 
 void add(ProstVM *vm) {
@@ -86,7 +86,7 @@ void neg(ProstVM *vm) {
 
     switch (w.type) {
         case WINT:
-            p_push(vm, WORD(-w.as_int));
+            p_push(vm, WORD(w.as_int == 1 ? 0 : 1));
             break;
         default:
             p_throw_warning(vm, "Trying to negate non-numeric value");

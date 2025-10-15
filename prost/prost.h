@@ -566,8 +566,8 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
         } break;
 
         case Lt: {
-            Word w1 = p_peek(vm);
-            Word w2 = p_peek(vm);
+            Word w1 = p_pop(vm);
+            Word w2 = p_pop(vm);
 
             if (w1.type == WPOINTER && word_is_string(&w1)
                 && w2.type == WPOINTER && word_is_string(&w2)) {
@@ -584,8 +584,8 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
         } break;
 
         case Lte: {
-            Word w1 = p_peek(vm);
-            Word w2 = p_peek(vm);
+            Word w1 = p_pop(vm);
+            Word w2 = p_pop(vm);
 
             if (w1.type == WPOINTER && word_is_string(&w1)
                 && w2.type == WPOINTER && word_is_string(&w2)) {
@@ -602,8 +602,8 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
         } break;
             
         case Gt: {
-            Word w1 = p_peek(vm);
-            Word w2 = p_peek(vm);
+            Word w1 = p_pop(vm);
+            Word w2 = p_pop(vm);
 
             if (w1.type == WPOINTER && word_is_string(&w1)
                 && w2.type == WPOINTER && word_is_string(&w2)) {
@@ -620,8 +620,8 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
         } break; 
 
         case Gte: {
-            Word w1 = p_peek(vm);
-            Word w2 = p_peek(vm);
+            Word w1 = p_pop(vm);
+            Word w2 = p_pop(vm);
 
             if (w1.type == WPOINTER && word_is_string(&w1)
                 && w2.type == WPOINTER && word_is_string(&w2)) {

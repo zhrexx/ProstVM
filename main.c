@@ -1,4 +1,3 @@
-// TODO: Pop
 #define PROST_IMPLEMENTATION
 #include <ctype.h>
 #include <stdio.h>
@@ -41,11 +40,56 @@ typedef struct {
 } Tokenizer;
 
 typedef struct {
+    char *name;
+    size_t position;
+} Label;
+
+typedef struct {
+    Label *labels;
+    size_t count;
+    size_t capacity;
+} LabelTable;
+
+typedef struct {
     Token *tokens;
     size_t pos;
     size_t count;
     ProstVM *vm;
+    LabelTable *current_labels;
 } ParserState;
+
+static void label_table_init(LabelTable *lt) {
+    lt->labels = NULL;
+    lt->count = 0;
+    lt->capacity = 0;
+}
+
+static void label_table_free(LabelTable *lt) {
+    for (size_t i = 0; i < lt->count; i++) {
+        free(lt->labels[i].name);
+    }
+    free(lt->labels);
+}
+
+static void label_table_add(LabelTable *lt, const char *name, size_t position) {
+    if (lt->count >= lt->capacity) {
+        lt->capacity = lt->capacity == 0 ? 8 : lt->capacity * 2;
+        lt->labels = realloc(lt->labels, lt->capacity * sizeof(Label));
+    }
+    lt->labels[lt->count].name = strdup(name);
+    lt->labels[lt->count].position = position;
+    lt->count++;
+}
+
+static bool label_table_find(LabelTable *lt, const char *name, size_t *out_position) {
+    for (size_t i = 0; i < lt->count; i++) {
+        if (strcmp(lt->labels[i].name, name) == 0) {
+            *out_position = lt->labels[i].position;
+            return true;
+        }
+    }
+    return false;
+}
 
 static void tok_init(Tokenizer *t, const char *src) {
     t->input = src;
@@ -268,6 +312,14 @@ static XVec parse_func_body(ParserState *p) {
     while (!parser_check(p, TOK_RBRACE) && !parser_check(p, TOK_EOF)) {
         Token tok = parser_peek(p);
 
+        if (tok.kind == TOK_DOT) {
+            parser_advance(p);
+            Token label_name = parser_expect(p, TOK_IDENT);
+            parser_expect(p, TOK_COLON);
+            label_table_add(p->current_labels, label_name.lexeme, xvec_len(&instructions));
+            continue;
+        }
+
         if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "push") == 0) {
             parser_advance(p);
             Token arg = parser_advance(p);
@@ -316,14 +368,28 @@ static XVec parse_func_body(ParserState *p) {
             }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmp") == 0) {
             parser_advance(p);
-            Token target = parser_expect(p, TOK_NUM);
-            Instruction *inst = make_inst(Jmp, WORD(atoi(target.lexeme)));
-            xvec_push(&instructions, WORD(inst));
+            Token target = parser_advance(p);
+
+            if (target.kind == TOK_DOT) {
+                Token label_name = parser_expect(p, TOK_IDENT);
+                Instruction *inst = make_inst(Jmp, word_string(label_name.lexeme));
+                xvec_push(&instructions, WORD(inst));
+            } else if (target.kind == TOK_NUM) {
+                Instruction *inst = make_inst(Jmp, WORD(atoi(target.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "jmpif") == 0) {
             parser_advance(p);
-            Token target = parser_expect(p, TOK_NUM);
-            Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
-            xvec_push(&instructions, WORD(inst));
+            Token target = parser_advance(p);
+
+            if (target.kind == TOK_DOT) {
+                Token label_name = parser_expect(p, TOK_IDENT);
+                Instruction *inst = make_inst(JmpIf, word_string(label_name.lexeme));
+                xvec_push(&instructions, WORD(inst));
+            } else if (target.kind == TOK_NUM) {
+                Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
+                xvec_push(&instructions, WORD(inst));
+            }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "dup") == 0) {
             parser_advance(p);
             Instruction *inst = make_inst(Dup, WORD(NULL));
@@ -365,12 +431,34 @@ static XVec parse_func_body(ParserState *p) {
         }
     }
 
+    for (size_t i = 0; i < xvec_len(&instructions); i++) {
+        Instruction *inst = (Instruction*)xvec_get(&instructions, i)->as_pointer;
+
+        if ((inst->type == Jmp || inst->type == JmpIf) && inst->arg.as_pointer != NULL) {
+            char *label_name = (char*)inst->arg.as_pointer;
+            if (isalpha(label_name[0]) || label_name[0] == '_') {
+                size_t position;
+                if (label_table_find(p->current_labels, label_name, &position)) {
+                    free(label_name);
+                    inst->arg = WORD(position);
+                } else {
+                    fprintf(stderr, "Error: Undefined label '%s'\n", label_name);
+                    exit(1);
+                }
+            }
+        }
+    }
+
     return instructions;
 }
 
 static void parse_func_decl(ParserState *p) {
     Token name = parser_expect(p, TOK_IDENT);
     parser_expect(p, TOK_LBRACE);
+
+    LabelTable labels;
+    label_table_init(&labels);
+    p->current_labels = &labels;
 
     XVec instructions = parse_func_body(p);
 
@@ -381,6 +469,9 @@ static void parse_func_decl(ParserState *p) {
 
     char *name_copy = strdup(name.lexeme);
     xmap_set(&p->vm->functions, name_copy, WORD(fn));
+
+    label_table_free(&labels);
+    p->current_labels = NULL;
 }
 
 static void parse_toplevel(ParserState *p) {
@@ -403,6 +494,7 @@ static ProstStatus assemble(ProstVM *vm, const char *src) {
     parser.pos = 0;
     parser.count = token_count;
     parser.vm = vm;
+    parser.current_labels = NULL;
 
     parse_toplevel(&parser);
 
