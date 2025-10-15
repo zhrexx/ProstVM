@@ -179,7 +179,7 @@ void p_free(ProstVM *vm) {
 
     for (int i = 0; i < P_REGISTERS_COUNT; i++) {
         ProstRegister *r = &vm->registers[i];
-        free(r->name);
+        free((void*)r->name);
         r->value = WORD(0);
     }
 

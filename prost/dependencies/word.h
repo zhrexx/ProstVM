@@ -41,7 +41,12 @@ static inline Word word_float(double value) {
     return (Word){ .type = WFLOAT, .as_float = value };
 }
 
-static inline Word word_pointer(void *ptr) {
+static inline Word word_pointer(void *ptr, bool owns_memory) {
+    return (Word){ .type = WPOINTER, .as_pointer = ptr, .flags = owns_memory ? WF_OWNS_MEMORY : 0 };
+}
+
+// this is used for WORD
+static inline Word word_pointer_(void *ptr) {
     return (Word){ .type = WPOINTER, .as_pointer = ptr, .flags = 0 };
 }
 
@@ -70,8 +75,8 @@ double: word_float, \
 char: word_char, \
 char*: word_string, \
 const char*: word_string, \
-void*: word_pointer, \
-default: word_pointer \
+void*: word_pointer_, \
+default: word_pointer_ \
 )(val)
 
 

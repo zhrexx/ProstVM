@@ -105,14 +105,12 @@ static XVec allocation_state = {0};
 
 // Allocates memory and saves pointer
 void alloc(ProstVM* vm) {
-    const int size = p_expect(vm, WINT).as_int;
+    const int64_t size = p_expect(vm, WINT).as_int;
     void *m = malloc(size);
     xvec_push(&allocation_state, WORD(m));
 
-    p_push(vm, WORD(m));
+    p_push(vm, word_pointer(m, true)); // by saying owns memory it will be cleaned up at free time of stack
 }
-
-
 
 void register_std(ProstVM *vm) {
     allocation_state = xvec_create(1);
