@@ -12,16 +12,15 @@ Assembler → Bytecode → Runner
 
 Minimal core. Everything else is stdlib.
 
-### Core Instructions (10 total)
+### Core Instructions (9 total)
 
 - `push` - Push value to stack
+- `pop` - Pop value from stack to register
 - `drop` - Drop top of stack
 - `halt` - Stop execution
 - `call` - Call function
 - `call @name` - Call external function
 - `ret` - Return from function
-- `*mem.name` - Dereference memory (load to stack)
-- `mem.name =` - Assign to memory (store from stack) 
 - `jmp` - Jump to label
 - `jmpif` - Jump if true
 
@@ -40,9 +39,6 @@ __entry {
 ## Assembly Structure
 
 ```asm
-mem {
-    counter: 0
-}
 
 __entry {
     push 42

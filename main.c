@@ -273,13 +273,20 @@ static XVec parse_func_body(ParserState *p) {
             Token arg = parser_advance(p);
 
             if (arg.kind == TOK_NUM) {
-                Instruction *inst = make_inst(Push, word_uint64((uint64_t)atoll(arg.lexeme)));
+                Instruction *inst = make_inst(Push, WORD((uint64_t)atoll(arg.lexeme)));
                 xvec_push(&instructions, WORD(inst));
             } else if (arg.kind == TOK_STR) {
                 Instruction *inst = make_inst(Push, word_string(arg.lexeme));
                 xvec_push(&instructions, WORD(inst));
             } else if (arg.kind == TOK_IDENT) {
                 Instruction *inst = make_inst(Push, word_string(arg.lexeme));
+                xvec_push(&instructions, WORD(inst));
+            }
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "pop") == 0) {
+            parser_advance(p);
+            Token arg = parser_advance(p);
+            if (arg.kind == TOK_IDENT) {
+                Instruction *inst = make_inst(Pop, word_string(arg.lexeme));
                 xvec_push(&instructions, WORD(inst));
             }
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "drop") == 0) {
@@ -289,6 +296,10 @@ static XVec parse_func_body(ParserState *p) {
         } else if (tok.kind == TOK_IDENT && (strcmp(tok.lexeme, "halt") == 0 || strcmp(tok.lexeme, "ret") == 0)) {
             parser_advance(p);
             Instruction *inst = make_inst(Halt, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "return") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Return, WORD(NULL));
             xvec_push(&instructions, WORD(inst));
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "call") == 0) {
             parser_advance(p);
@@ -312,6 +323,42 @@ static XVec parse_func_body(ParserState *p) {
             parser_advance(p);
             Token target = parser_expect(p, TOK_NUM);
             Instruction *inst = make_inst(JmpIf, WORD(atoi(target.lexeme)));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "dup") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Dup, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "swap") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Swap, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "over") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Over, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "eq") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Eq, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "neq") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Neq, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "lt") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Lt, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "lte") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Lte, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "gt") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Gt, WORD(NULL));
+            xvec_push(&instructions, WORD(inst));
+        } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "gte") == 0) {
+            parser_advance(p);
+            Instruction *inst = make_inst(Gte, WORD(NULL));
             xvec_push(&instructions, WORD(inst));
         } else {
             parser_advance(p);

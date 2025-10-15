@@ -1,4 +1,3 @@
-// TODO: add, sub, mul, divi, cmp
 
 #ifndef PROST_H
 #define PROST_H
@@ -19,6 +18,7 @@
 
 #define P_REGISTERS_COUNT 32
 
+// TODO: maybe add load for registers
 typedef enum {
     Push,
     Pop, // stack -> register
@@ -29,6 +29,15 @@ typedef enum {
     Return,
     Jmp,
     JmpIf,
+    Dup,
+    Swap,
+    Over,
+    Eq,   // equality check (push 1 or 0)
+    Neq,  // not equal
+    Lt,   // less than
+    Lte,  // less than or equal
+    Gt,   // greater than
+    Gte,  // greater than or equal
 } InstructionType;
 
 typedef struct {
@@ -457,7 +466,7 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
 
     switch (instruction.type) {
         case Push: // TODO: check if registername then from register else push string
-            if (instruction.arg.type == WPOINTER && instruction.arg.owns_memory) {
+            if (instruction.arg.type == WPOINTER && word_owns_memory(&instruction.arg)) {
                 for (int i = 0; i < P_REGISTERS_COUNT; i++) {
                     if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
                         p_push(vm, vm->registers[i].value);
@@ -470,7 +479,7 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
             break;
 
         case Pop: // TODO: to register
-            if (instruction.arg.type == WPOINTER && instruction.arg.owns_memory) {
+            if (instruction.arg.type == WPOINTER && word_owns_memory(&instruction.arg)) {
                 for (int i = 0; i < P_REGISTERS_COUNT; i++) {
                     if (strcmp(vm->registers[i].name, (const char *)instruction.arg.as_pointer) == 0) {
                         Word w = p_pop(vm);
@@ -530,6 +539,122 @@ ProstStatus p_execute_instruction(ProstVM *vm, Instruction instruction) {
                 vm->current_ip = instruction.arg.as_int;
             }
             break;
+
+        case Eq: {
+            Word w1 = p_peek(vm);
+            Word w2 = p_peek(vm);
+
+            if (w1.type == WPOINTER && word_is_string(&w1)
+                && w2.type == WPOINTER && word_is_string(&w2)) {
+                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) == 0 ? 1 : 0));
+            } else if (w1.type == WPOINTER && w1.type == w2.type) {
+                p_push(vm, WORD(w1.as_pointer == w2.as_pointer ? 1 : 0));
+            } else if (w1.type == w2.type && w1.type == WINT) {
+                p_push(vm, WORD(w1.as_int == w2.as_int ? 1 : 0));
+            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+                p_push(vm, WORD(w1.as_float == w2.as_float ? 1 : 0));
+            } else {
+                p_push(vm, WORD(0));
+            }
+        } break;
+
+        case Neq: {
+            Word w = p_peek(vm);
+            if (w.type == WINT) {
+                p_push(vm, WORD(w.as_int != 0 ? 1 : 0));
+            }
+        } break;
+
+        case Lt: {
+            Word w1 = p_peek(vm);
+            Word w2 = p_peek(vm);
+
+            if (w1.type == WPOINTER && word_is_string(&w1)
+                && w2.type == WPOINTER && word_is_string(&w2)) {
+                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) < 0 ? 1 : 0));
+            } else if (w1.type == WPOINTER && w1.type == w2.type) {
+                p_push(vm, WORD(w1.as_pointer < w2.as_pointer ? 1 : 0));
+            } else if (w1.type == WINT && w2.type == WINT) {
+                p_push(vm, WORD(w1.as_int < w2.as_int ? 1 : 0));
+            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+                p_push(vm, WORD(w1.as_float < w2.as_float ? 1 : 0));
+            } else {
+                p_push(vm, WORD(0));
+            }
+        } break;
+
+        case Lte: {
+            Word w1 = p_peek(vm);
+            Word w2 = p_peek(vm);
+
+            if (w1.type == WPOINTER && word_is_string(&w1)
+                && w2.type == WPOINTER && word_is_string(&w2)) {
+                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) <= 0 ? 1 : 0));
+            } else if (w1.type == WPOINTER && w1.type == w2.type) {
+                p_push(vm, WORD(w1.as_pointer <= w2.as_pointer ? 1 : 0));
+            } else if (w1.type == WINT && w2.type == WINT) {
+                p_push(vm, WORD(w1.as_int <= w2.as_int ? 1 : 0));
+            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+                p_push(vm, WORD(w1.as_float <= w2.as_float ? 1 : 0));
+            } else {
+                p_push(vm, WORD(0));
+            }
+        } break;
+            
+        case Gt: {
+            Word w1 = p_peek(vm);
+            Word w2 = p_peek(vm);
+
+            if (w1.type == WPOINTER && word_is_string(&w1)
+                && w2.type == WPOINTER && word_is_string(&w2)) {
+                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) > 0 ? 1 : 0));
+            } else if (w1.type == WPOINTER && w1.type == w2.type) {
+                p_push(vm, WORD(w1.as_pointer > w2.as_pointer ? 1 : 0));
+            } else if (w1.type == WINT && w2.type == WINT) {
+                p_push(vm, WORD(w1.as_int > w2.as_int ? 1 : 0));
+            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+                p_push(vm, WORD(w1.as_float > w2.as_float ? 1 : 0));
+            } else {
+                p_push(vm, WORD(0));
+            }
+        } break; 
+
+        case Gte: {
+            Word w1 = p_peek(vm);
+            Word w2 = p_peek(vm);
+
+            if (w1.type == WPOINTER && word_is_string(&w1)
+                && w2.type == WPOINTER && word_is_string(&w2)) {
+                p_push(vm, WORD(strcmp(w1.as_pointer, w2.as_pointer) >= 0 ? 1 : 0));
+            } else if (w1.type == WPOINTER && w1.type == w2.type) {
+                p_push(vm, WORD(w1.as_pointer >= w2.as_pointer ? 1 : 0));
+            } else if (w1.type == WINT && w2.type == WINT) {
+                p_push(vm, WORD(w1.as_int >= w2.as_int ? 1 : 0));
+            } else if (w1.type == WFLOAT && w2.type == WFLOAT) {
+                p_push(vm, WORD(w1.as_float >= w2.as_float ? 1 : 0));
+            } else {
+                p_push(vm, WORD(0));
+            }
+        } break;
+
+        case Dup: {
+            Word w = p_peek(vm);
+            p_push(vm, w);
+        } break;
+
+        case Swap: {
+            Word w1 = p_pop(vm); // w1, w2
+            Word w2 = p_pop(vm); // w2
+
+            p_push(vm, w1); // w1
+            p_push(vm, w2); // w2, w1
+        } break;
+
+        case Over: {
+            Word *w = xvec_get(&vm->stack, vm->stack.size - 2);
+            p_push(vm, *w);
+        } break;
+
         default:
             vm->status = P_ERR_INVALID_BYTECODE;
             return vm->status;

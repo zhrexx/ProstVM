@@ -7,10 +7,7 @@ void print(ProstVM *vm) {
 
     switch (w.type) {
         case WINT:
-            printf("%d\n", w.as_int);
-            break;
-        case WUINT64:
-            printf("%llu\n", w.as_uint64);
+            printf("%llu\n", w.as_int);
             break;
         case WPOINTER: // treat as string
             printf("%s\n", (char *)w.as_pointer);
@@ -29,10 +26,7 @@ void add(ProstVM *vm) {
 
     if (w1.type == WINT) result += w1.as_int;
     if (w2.type == WINT) result += w2.as_int;
-    if (w1.type == WUINT64) result += w1.as_uint64;
-    if (w2.type == WUINT64) result += w2.as_uint64;
-
-    p_push(vm, word_uint64(result));
+    p_push(vm, WORD(result));
 }
 
 void sub(ProstVM *vm) {
@@ -41,12 +35,9 @@ void sub(ProstVM *vm) {
     int64_t result = 0;
 
     if (w1.type == WINT) result = w1.as_int;
-    else if (w1.type == WUINT64) result = w1.as_uint64;
-
     if (w2.type == WINT) result -= w2.as_int;
-    else if (w2.type == WUINT64) result -= w2.as_uint64;
 
-    p_push(vm, word_uint64(result));
+    p_push(vm, WORD(result));
 }
 
 void mul(ProstVM *vm) {
@@ -55,29 +46,23 @@ void mul(ProstVM *vm) {
     uint64_t result = 1;
 
     if (w1.type == WINT) result = w1.as_int;
-    else if (w1.type == WUINT64) result = w1.as_uint64;
-
     if (w2.type == WINT) result *= w2.as_int;
-    else if (w2.type == WUINT64) result *= w2.as_uint64;
 
-    p_push(vm, word_uint64(result));
+    p_push(vm, WORD(result));
 }
 
 void divi(ProstVM *vm) {
     Word w1 = p_pop(vm);
     Word w2 = p_pop(vm);
-    if ((w2.type == WINT && w2.as_int == 0) || (w2.type == WUINT64 && w2.as_uint64 == 0)) {
+    if ((w2.type == WINT && w2.as_int == 0)) {
         fprintf(stderr, "ERROR: Division by zero\n");
         vm->status = P_ERR_GENERAL_VM_ERROR;
         vm->running = false;
-        p_push(vm, word_uint64(0));
+        p_push(vm, WORD(0));
         return;
     }
 
-    uint64_t numerator = (w1.type == WINT) ? w1.as_int : w1.as_uint64;
-    uint64_t denominator = (w2.type == WINT) ? w2.as_int : w2.as_uint64;
-
-    p_push(vm, word_uint64(numerator / denominator));
+    p_push(vm, WORD(w1.as_int / w2.as_int));
 }
 
 void cmp(ProstVM *vm) {
@@ -103,9 +88,6 @@ void neg(ProstVM *vm) {
         case WINT:
             p_push(vm, WORD(-w.as_int));
             break;
-        case WUINT64:
-            p_push(vm, WORD(-w.as_uint64));
-            break;
         default:
             p_throw_warning(vm, "Trying to negate non-numeric value");
             p_push(vm, WORD(0));
@@ -123,7 +105,7 @@ static XVec allocation_state = {0};
 
 // Allocates memory and saves pointer
 void alloc(ProstVM* vm) {
-    const int size = p_expect(vm, WUINT64).as_uint64;
+    const int size = p_expect(vm, WINT).as_int;
     void *m = malloc(size);
     xvec_push(&allocation_state, WORD(m));
 
