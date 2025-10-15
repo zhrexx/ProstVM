@@ -112,6 +112,30 @@ void alloc(ProstVM* vm) {
     p_push(vm, word_pointer(m, true)); // by saying owns memory it will be cleaned up at free time of stack
 }
 
+
+
+void dump_p_state(ProstVM *vm) {
+    printf("=== PROST STATE DUMP ===\n");
+    printf("  STACK (size: %zu):\n", xvec_len(&vm->stack));
+    for (size_t i = 0; i < xvec_len(&vm->stack); i++) {
+        printf("    %s\n", word_to_str(xvec_get(&vm->stack, i)));
+    }
+    printf("  CALL STACK: \n");
+    for (size_t i = 0; i < xvec_len(&vm->call_stack); i++) {
+        printf("    %s\n", ((CallFrame*)xvec_get(&vm->call_stack, i)->as_pointer)->function_name);
+    }
+    printf("  EXTERNAL FUNCTIONS: \n");
+    for (size_t i = 0; i < vm->external_functions.size; i++) {
+        printf("    %s\n", vm->external_functions.entries[i].key);
+    }
+}
+
+void aabort(ProstVM *vm) {
+    fprintf(stderr, "!! EXECUTION ABORTED !!\n");
+    dump_p_state(vm);
+    abort();
+}
+
 void register_std(ProstVM *vm) {
     allocation_state = xvec_create(1);
 
@@ -122,8 +146,10 @@ void register_std(ProstVM *vm) {
     p_register_external(vm, "divi", divi);
     p_register_external(vm, "cmp", cmp);
     p_register_external(vm, "neg", neg);
-    p_register_external(vm, "alloc", alloc);
+    p_register_external(vm, "alloc", alloc); // TODO: remove?
     p_register_external(vm, "typeof", typeof_);
+    p_register_external(vm, "dump_p_state", dump_p_state);
+    p_register_external(vm, "abort", aabort);
 }
 
 void unload_std() {

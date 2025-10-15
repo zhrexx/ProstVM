@@ -85,46 +85,6 @@ const char *p_instr_to_str(InstructionType t) {
     }
 }
 
-const char *word_to_str(const Word *w) {
-    static char buffer[64];
-
-    switch (w->type) {
-        case WINT: {
-            if (word_is_unsigned(w)) {
-                snprintf(buffer, sizeof(buffer), "%llu", (unsigned long long)w->as_int);
-            } else {
-                snprintf(buffer, sizeof(buffer), "%lld", w->as_int);
-            }
-            return buffer;
-        } break;
-
-        case WFLOAT: {
-            snprintf(buffer, sizeof(buffer), "%g", w->as_float);
-            return buffer;
-        } break;
-
-        case WCHAR_: {
-            snprintf(buffer, sizeof(buffer), "%c", w->as_char);
-            return buffer;
-        } break;
-
-        case WPOINTER: {
-            if (word_is_string(w) && w->as_pointer != NULL) {
-                return (const char*)w->as_pointer;
-            } else if (w->as_pointer != NULL) {
-                snprintf(buffer, sizeof(buffer), "%p", w->as_pointer);
-                return buffer;
-            } else {
-                return "";
-            }
-        } break;
-
-        default: {
-            return "UNKNOWN";
-        }
-    }
-}
-
 int main(int argc, char **argv) {
     ProstVM *vm = p_init();
     if (argc < 2) {
