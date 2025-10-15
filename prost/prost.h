@@ -28,10 +28,6 @@ typedef struct {
     Word arg;
 } Instruction;
 
-typedef struct {
-    const char *name;
-    Word value;
-} ProstRegister;
 
 typedef enum {
     P_OK = 0,
@@ -66,7 +62,7 @@ typedef void (*p_external_function)(ProstVM *vm);
 typedef ProstStatus (*InstructionHandler)(ProstVM *vm, Instruction *inst);
 
 struct ProstVM {
-    ProstRegister registers[P_REGISTERS_COUNT];
+    Word registers[P_REGISTERS_COUNT]; // TODO: implement usage
     XVec stack;
     XVec call_stack;
     XMap functions;
@@ -136,28 +132,12 @@ static inline Word p_peek(ProstVM *vm) {
 }
 
 static ProstStatus handle_push(ProstVM *vm, Instruction *inst) {
-    if (inst->arg.type == WPOINTER && word_owns_memory(&inst->arg)) {
-        for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-            if (strcmp(vm->registers[i].name, (const char *)inst->arg.as_pointer) == 0) {
-                p_push(vm, vm->registers[i].value);
-                return P_OK;
-            }
-        }
-    }
     p_push(vm, inst->arg);
     return P_OK;
 }
 
 static ProstStatus handle_pop(ProstVM *vm, Instruction *inst) {
-    if (inst->arg.type == WPOINTER && word_owns_memory(&inst->arg)) {
-        for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-            if (strcmp(vm->registers[i].name, (const char *)inst->arg.as_pointer) == 0) {
-                Word w = p_pop(vm);
-                vm->registers[i].value = w;
-                return vm->status;
-            }
-        }
-    }
+    // TODO:
     return P_ERR_INVALID_INDEX;
 }
 
@@ -359,12 +339,6 @@ ProstVM *p_init() {
     vm->jump_table[Swap] = handle_swap;
     vm->jump_table[Over] = handle_over;
 
-    for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-        ProstRegister *r = &vm->registers[i];
-        r->name = format("r%d", i);
-        r->value = WORD(0);
-    }
-
     return vm;
 }
 
@@ -389,9 +363,7 @@ void p_free(ProstVM *vm) {
     xmap_free(&vm->external_functions);
 
     for (int i = 0; i < P_REGISTERS_COUNT; i++) {
-        ProstRegister *r = &vm->registers[i];
-        free((void*)r->name);
-        r->value = WORD(0);
+        vm->registers[i] = WORD(0);
     }
 
     free(vm->frame_pool);
