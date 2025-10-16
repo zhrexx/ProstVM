@@ -9,7 +9,7 @@ __entry {
     call @add
 
     dup
-    push 10000
+    push 1000000
     lt
     call @neg
 

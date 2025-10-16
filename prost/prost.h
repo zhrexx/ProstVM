@@ -1,3 +1,6 @@
+// TODO: add memory ops
+// TODO: add read8 and write8
+
 #ifndef PROST_H
 #define PROST_H
 
