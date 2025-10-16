@@ -1,3 +1,4 @@
+// TODO: implement push @ for PushRegister
 #define PROST_IMPLEMENTATION
 #include <ctype.h>
 #include <stdio.h>
@@ -305,13 +306,21 @@ static InstructionArray parse_func_body(ParserState *p) {
             parser_advance(p);
             Token arg = parser_advance(p);
             Instruction inst = {Push, WORD(0)};
-            if (arg.kind == TOK_NUM) {
-                inst.arg = WORD((uint64_t)atoll(arg.lexeme));
-            } else if (arg.kind == TOK_STR) {
-                inst.arg = word_string(arg.lexeme);
-            } else if (arg.kind == TOK_IDENT) {
-                inst.arg = word_string(arg.lexeme);
+            if (parser_check(p, TOK_AT)) {
+                parser_advance(p);
+                Token name = parser_expect(p, TOK_NUM);
+                inst.type = PushRegister;
+                inst.arg = WORD(atoi(name.lexeme));
+            } else {
+                if (arg.kind == TOK_NUM) {
+                    inst.arg = WORD((uint64_t)atoll(arg.lexeme));
+                } else if (arg.kind == TOK_STR) {
+                    inst.arg = word_string(arg.lexeme);
+                } else if (arg.kind == TOK_IDENT) {
+                    inst.arg = word_string(arg.lexeme);
+                }
             }
+
             inst_array_push(&instructions, inst);
         } else if (tok.kind == TOK_IDENT && strcmp(tok.lexeme, "pop") == 0) {
             parser_advance(p);
