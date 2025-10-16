@@ -22,8 +22,8 @@
 #define CALL_FRAME_POOL_SIZE 256
 
 typedef enum {
-    Push, Pop, Drop, Halt, Call, CallExtern, Return, Jmp, JmpIf,
-    Dup, Swap, Over, Eq, Neq, Lt, Lte, Gt, Gte, INSTRUCTION_COUNT
+    Push, PushRegister, Pop, Drop, Halt, Call, CallExtern, Return, Jmp, JmpIf,
+    Dup, Swap, Over, Eq, Neq, Lt, Lte, Gt, Gte, Read8, Write8, INSTRUCTION_COUNT
 } InstructionType;
 
 typedef struct {
@@ -139,9 +139,68 @@ static ProstStatus handle_push(ProstVM *vm, Instruction *inst) {
     return P_OK;
 }
 
+static ProstStatus handle_push_register(ProstVM *vm, Instruction *inst) {
+    p_push(vm, vm->registers[inst->arg.as_int]);
+    return P_OK;
+}
+
 static ProstStatus handle_pop(ProstVM *vm, Instruction *inst) {
-    // TODO:
-    return P_ERR_INVALID_INDEX;
+    vm->registers[inst->arg.as_int] = p_pop(vm);
+    return P_OK;
+}
+
+static ProstStatus handle_read8(ProstVM *vm, Instruction *inst) {
+    Word addr_word = p_pop(vm);
+    if (vm->status != P_OK) {
+        return vm->status;
+    }
+
+    if (addr_word.type != WPOINTER) {
+        vm->status = P_ERR_GENERAL_VM_ERROR;
+        fprintf(stderr, "ERROR: read8 expects pointer address\n");
+        return vm->status;
+    }
+
+    uint8_t *ptr = (uint8_t *)addr_word.as_pointer;
+    uint64_t value = 0;
+    memcpy(&value, ptr, 8);
+
+    p_push(vm, WORD((int64_t)value));
+    return P_OK;
+}
+
+static ProstStatus handle_write8(ProstVM *vm, Instruction *inst) {
+    Word value_word = p_pop(vm);
+    if (vm->status != P_OK) {
+        return vm->status;
+    }
+
+    Word addr_word = p_pop(vm);
+    if (vm->status != P_OK) {
+        return vm->status;
+    }
+
+    if (addr_word.type != WPOINTER) {
+        vm->status = P_ERR_GENERAL_VM_ERROR;
+        fprintf(stderr, "ERROR: write8 expects pointer address\n");
+        return vm->status;
+    }
+
+    int64_t int_value;
+    if (value_word.type == WINT) {
+        int_value = value_word.as_int;
+    } else if (value_word.type == WFLOAT) {
+        int_value = (int64_t)value_word.as_float;
+    } else {
+        vm->status = P_ERR_GENERAL_VM_ERROR;
+        fprintf(stderr, "ERROR: write8 expects integer or float value\n");
+        return vm->status;
+    }
+
+    uint8_t *ptr = (uint8_t *)addr_word.as_pointer;
+    memcpy(ptr, &int_value, 8);
+
+    return P_OK;
 }
 
 static ProstStatus handle_drop(ProstVM *vm, Instruction *inst) {
@@ -324,6 +383,7 @@ ProstVM *p_init() {
     vm->frame_pool_index = 0;
 
     vm->jump_table[Push] = handle_push;
+    vm->jump_table[PushRegister] = handle_push_register;
     vm->jump_table[Pop] = handle_pop;
     vm->jump_table[Drop] = handle_drop;
     vm->jump_table[Halt] = handle_halt;
@@ -341,6 +401,8 @@ ProstVM *p_init() {
     vm->jump_table[Dup] = handle_dup;
     vm->jump_table[Swap] = handle_swap;
     vm->jump_table[Over] = handle_over;
+    vm->jump_table[Write8] = handle_write8;
+    vm->jump_table[Read8] = handle_read8;
 
     return vm;
 }
