@@ -1,17 +1,27 @@
-// TODO: implement push @ for PushRegister
 #define PROST_IMPLEMENTATION
+#include "prost/prost.h"
+#include "prost/std.h"
 #include <ctype.h>
+#include <getopt.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
-#include <getopt.h>
-#include "prost/prost.h"
-#include "prost/std.h"
 
 typedef enum {
-    TOK_NUM, TOK_IDENT, TOK_STR, TOK_LBRACE, TOK_LPAREN, TOK_RBRACE,
-    TOK_RPAREN, TOK_COLON, TOK_DOT, TOK_AT, TOK_STAR, TOK_EQ, TOK_EOF,
+    TOK_NUM,
+    TOK_IDENT,
+    TOK_STR,
+    TOK_LBRACE,
+    TOK_LPAREN,
+    TOK_RBRACE,
+    TOK_RPAREN,
+    TOK_COLON,
+    TOK_DOT,
+    TOK_AT,
+    TOK_STAR,
+    TOK_EQ,
+    TOK_EOF,
 } TokenKind;
 
 typedef struct {
@@ -90,12 +100,14 @@ static void tok_init(Tokenizer *t, const char *src) {
 }
 
 static char tok_peek(Tokenizer *t) {
-    if (t->pos >= t->len) return '\0';
+    if (t->pos >= t->len)
+        return '\0';
     return t->input[t->pos];
 }
 
 static char tok_advance(Tokenizer *t) {
-    if (t->pos >= t->len) return '\0';
+    if (t->pos >= t->len)
+        return '\0';
     char c = t->input[t->pos++];
     if (c == '\n') {
         t->line++;
@@ -190,26 +202,31 @@ static Token tok_next(Tokenizer *t) {
         tok_advance(t);
         size_t start = t->pos;
         while (tok_peek(t) && tok_peek(t) != '"') {
-            if (tok_peek(t) == '\\') tok_advance(t);
+            if (tok_peek(t) == '\\')
+                tok_advance(t);
             tok_advance(t);
         }
         size_t end = t->pos;
-        if (tok_peek(t) == '"') tok_advance(t);
+        if (tok_peek(t) == '"')
+            tok_advance(t);
         char *lexeme = tok_extract_range(t->input, start, end);
         return tok_make_token(TOK_STR, lexeme, start_line, start_col);
     }
 
     if (isdigit(c) || (c == '-' && t->pos + 1 < t->len && isdigit(t->input[t->pos + 1]))) {
         size_t start = t->pos;
-        if (c == '-') tok_advance(t);
-        while (isdigit(tok_peek(t))) tok_advance(t);
+        if (c == '-')
+            tok_advance(t);
+        while (isdigit(tok_peek(t)))
+            tok_advance(t);
         char *lexeme = tok_extract_range(t->input, start, t->pos);
         return tok_make_token(TOK_NUM, lexeme, start_line, start_col);
     }
 
     if (isalpha(c) || c == '_') {
         size_t start = t->pos;
-        while (isalnum(tok_peek(t)) || tok_peek(t) == '_') tok_advance(t);
+        while (isalnum(tok_peek(t)) || tok_peek(t) == '_')
+            tok_advance(t);
         char *lexeme = tok_extract_range(t->input, start, t->pos);
         return tok_make_token(TOK_IDENT, lexeme, start_line, start_col);
     }
@@ -235,7 +252,8 @@ static Token *tok_tokenize(const char *src, size_t *out_count) {
         }
 
         tokens[count++] = tok;
-        if (tok.kind == TOK_EOF) break;
+        if (tok.kind == TOK_EOF)
+            break;
     }
 
     *out_count = count;
@@ -421,7 +439,7 @@ static InstructionArray parse_func_body(ParserState *p) {
     for (size_t i = 0; i < instructions.count; i++) {
         Instruction *inst = &instructions.data[i];
         if ((inst->type == Jmp || inst->type == JmpIf) && inst->arg.as_pointer != NULL) {
-            char *label_name = (char*)inst->arg.as_pointer;
+            char *label_name = (char *) inst->arg.as_pointer;
             if (isalpha(label_name[0]) || label_name[0] == '_') {
                 size_t position;
                 if (label_table_find(p->current_labels, label_name, &position)) {
@@ -485,7 +503,8 @@ static ProstStatus assemble(ProstVM *vm, const char *src) {
     parse_toplevel(&parser);
 
     for (size_t i = 0; i < token_count; i++) {
-        if (tokens[i].lexeme) free(tokens[i].lexeme);
+        if (tokens[i].lexeme)
+            free(tokens[i].lexeme);
     }
     free(tokens);
 
@@ -539,12 +558,12 @@ int main(int argc, char **argv) {
     XVec load_library = xvec_create(2);
 
     static struct option long_options[] = {
-        {"help",         no_argument,       0, 'h'},
-        {"output",       required_argument, 0, 'o'},
-        {"dont-run",     no_argument,       0, 'r'},
-        {"dont-compile", no_argument,       0, 'c'},
-        {"verbose",      no_argument,       0, 'v'},
-        {"library",      required_argument, 0, 'd'},
+        {"help", no_argument, 0, 'h'},
+        {"output", required_argument, 0, 'o'},
+        {"dont-run", no_argument, 0, 'r'},
+        {"dont-compile", no_argument, 0, 'c'},
+        {"verbose", no_argument, 0, 'v'},
+        {"library", required_argument, 0, 'd'},
         {0, 0, 0, 0}
     };
 
@@ -595,7 +614,8 @@ int main(int argc, char **argv) {
 
     if (is_bytecode) {
         dont_compile = true;
-        if (verbose) printf("Detected bytecode file (.pco), skipping compilation\n");
+        if (verbose)
+            printf("Detected bytecode file (.pco), skipping compilation\n");
     }
 
     ProstVM *vm = p_init();
@@ -606,12 +626,13 @@ int main(int argc, char **argv) {
     register_std(vm);
 
     for (int i = 0; i < xvec_len(&load_library); i++) {
-        p_load_library(vm, (const char*)xvec_get(&load_library, i)->as_pointer);
+        p_load_library(vm, (const char *) xvec_get(&load_library, i)->as_pointer);
     }
     xvec_free(&load_library);
 
     if (!dont_compile) {
-        if (verbose) printf("Reading source file: %s\n", input_file);
+        if (verbose)
+            printf("Reading source file: %s\n", input_file);
 
         char *source = read_file(input_file);
         if (!source) {
@@ -619,16 +640,19 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (verbose) printf("Assembling...\n");
+        if (verbose)
+            printf("Assembling...\n");
 
         ProstStatus status = assemble(vm, source);
         free(source);
 
-        if (verbose) printf("Generating bytecode...\n");
+        if (verbose)
+            printf("Generating bytecode...\n");
 
         ByteBuf bytecode = p_to_bytecode(vm);
 
-        if (verbose) printf("Writing bytecode to: %s\n", output_file);
+        if (verbose)
+            printf("Writing bytecode to: %s\n", output_file);
 
         FILE *f = fopen(output_file, "wb");
         if (!f) {
@@ -640,13 +664,15 @@ int main(int argc, char **argv) {
         fwrite(bytecode.data, 1, bytecode.len, f);
         fclose(f);
 
-        if (verbose) printf("Compilation successful (%zu bytes)\n", bytecode.len);
+        if (verbose)
+            printf("Compilation successful (%zu bytes)\n", bytecode.len);
     }
 
     if (!dont_run) {
         const char *bytecode_file = dont_compile ? input_file : output_file;
 
-        if (verbose) printf("Loading bytecode from: %s\n", bytecode_file);
+        if (verbose)
+            printf("Loading bytecode from: %s\n", bytecode_file);
 
         char *bytecode = read_file(bytecode_file);
         if (!bytecode) {
@@ -665,7 +691,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (verbose) printf("Loading bytecode into VM...\n");
+        if (verbose)
+            printf("Loading bytecode into VM...\n");
 
         ProstStatus status = p_from_bytecode(vm, bytecode);
         free(bytecode);
@@ -676,7 +703,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (verbose) printf("Running program...\n");
+        if (verbose)
+            printf("Running program...\n");
 
         status = p_run(vm);
 
@@ -720,7 +748,7 @@ int main(int argc, char **argv) {
             printf("Stack size: %zu\n", vm->stack.size);
             if (vm->stack.size > 0) {
                 Word top = p_peek(vm);
-                printf("Top of stack: %ld\n", (long)top.as_pointer);
+                printf("Top of stack: %ld\n", (long) top.as_pointer);
             }
             printf("Exit code: %d\n", vm->exit_code);
         }
